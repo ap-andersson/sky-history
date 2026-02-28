@@ -71,7 +71,7 @@ curl http://localhost:8080/api/stats
 
 ## Example `docker-compose.yml`
 
-Below is the full production docker-compose configuration with all four services:
+Below is the full production docker-compose configuration with all four services. Images are published to GitHub Container Registry by the CI workflow.
 
 ```yaml
 services:
@@ -94,9 +94,11 @@ services:
       - skyhistory
 
   processor:
-    build:
-      context: ./processor
-      dockerfile: Dockerfile
+    image: ghcr.io/ap-andersson/sky-history-processor:latest
+    # Or build locally:
+    # build:
+    #   context: ./processor
+    #   dockerfile: Dockerfile
     restart: unless-stopped
     container_name: skyhistory-processor
     depends_on:
@@ -115,9 +117,11 @@ services:
       - skyhistory
 
   api:
-    build:
-      context: ./api
-      dockerfile: Dockerfile
+    image: ghcr.io/ap-andersson/sky-history-api:latest
+    # Or build locally:
+    # build:
+    #   context: ./api
+    #   dockerfile: Dockerfile
     restart: unless-stopped
     container_name: skyhistory-api
     depends_on:
@@ -131,9 +135,11 @@ services:
       - skyhistory
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    image: ghcr.io/ap-andersson/sky-history-frontend:latest
+    # Or build locally:
+    # build:
+    #   context: ./frontend
+    #   dockerfile: Dockerfile
     restart: unless-stopped
     container_name: skyhistory-frontend
     depends_on:
