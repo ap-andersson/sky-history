@@ -6,6 +6,8 @@ Sky-History is a self-hosted application that automatically downloads daily ADS-
 
 The goal is **not** to store every data point — it extracts and stores only the summary of each flight segment (ICAO, callsign, date, first/last seen times).
 
+How up to date the data is depends entirely on what data has been published on github. No live colleting of data from recievers possible now.
+
 ---
 
 ## Architecture
@@ -32,6 +34,15 @@ GitHub Releases ──► Processor ──► PostgreSQL ◄── API ◄──
 4. Flight summaries (ICAO, callsign, date, first/last seen) are batch-inserted into PostgreSQL.
 5. **API** serves the data via RESTful endpoints.
 6. **Frontend** provides a dark-themed search UI with quick search, advanced multi-filter search, and per-aircraft date-scoped detail pages.
+
+---
+
+### Todo
+
+1. Handle API request from outside the stack (requires auth etc)
+2. Maybe add some more flight info?
+3. Maybe integrate into tar1090 in some way?
+
 
 ---
 
