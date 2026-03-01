@@ -199,7 +199,8 @@ All endpoints return JSON and are accessible under `/api/`.
 | Method | Path          | Description                 |
 |--------|---------------|-----------------------------|
 | GET    | `/api/health` | Health check (`{"status":"ok"}`) |
-| GET    | `/api/stats`  | Processing statistics (total aircraft, flights, releases processed) |
+| GET    | `/api/stats`  | Processing statistics (total aircraft, flights, releases, oldest/newest date range) |
+| GET    | `/api/failed-dates` | Dates that permanently failed processing (corrupt tarballs, etc.) |
 
 ### Search
 
@@ -222,11 +223,12 @@ All endpoints return JSON and are accessible under `/api/`.
 
 ## Database Schema
 
-Three tables are created automatically on startup:
+Four tables are created automatically on startup:
 
 - **`aircraft`** — ICAO (primary key), registration, type code, description
 - **`flights`** — ICAO, callsign, date, first/last seen timestamps (unique on icao+callsign+date+first_seen)
 - **`processed_releases`** — Tracks which GitHub release tags have been processed
+- **`failed_releases`** — Tracks releases that failed processing (with attempt count and permanent flag)
 
 ---
 
