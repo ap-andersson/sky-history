@@ -34,7 +34,8 @@ type Stats struct {
 	TotalReleases int        `json:"total_releases"`
 	TotalAircraft int        `json:"total_aircraft"`
 	TotalFlights  int        `json:"total_flights"`
-	LastProcessed *time.Time `json:"last_processed,omitempty"`
+	OldestDate    *time.Time `json:"oldest_date,omitempty"`
+	NewestDate    *time.Time `json:"newest_date,omitempty"`
 }
 
 // ExternalLink represents a link to an external tar1090 instance.

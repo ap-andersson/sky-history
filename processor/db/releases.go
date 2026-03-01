@@ -54,6 +54,42 @@ func (r *ReleaseRepo) GetLastProcessedDate(ctx context.Context) (*time.Time, err
 	return date, nil
 }
 
+// RecordFailure increments the failure count for a release tag.
+// If the release has already failed once, marks it as permanently failed.
+// Returns true if the release is now permanently failed.
+func (r *ReleaseRepo) RecordFailure(ctx context.Context, tag string, date time.Time, errMsg string) (permanent bool, err error) {
+	_, err = r.pool.Exec(ctx, `
+        INSERT INTO failed_releases (tag, date, attempt_count, last_error, first_failed_at, last_failed_at, permanent)
+        VALUES ($1, $2, 1, $3, NOW(), NOW(), FALSE)
+        ON CONFLICT (tag) DO UPDATE SET
+            attempt_count = failed_releases.attempt_count + 1,
+            last_error = $3,
+            last_failed_at = NOW(),
+            permanent = CASE WHEN failed_releases.attempt_count >= 1 THEN TRUE ELSE FALSE END
+    `, tag, date, errMsg)
+	if err != nil {
+		return false, fmt.Errorf("record failure for %s: %w", tag, err)
+	}
+
+	// Check if now permanently failed
+	err = r.pool.QueryRow(ctx, "SELECT permanent FROM failed_releases WHERE tag = $1", tag).Scan(&permanent)
+	if err != nil {
+		return false, fmt.Errorf("check permanent failure for %s: %w", tag, err)
+	}
+	return permanent, nil
+}
+
+// IsPermanentlyFailed checks if a release tag has been permanently marked as failed.
+func (r *ReleaseRepo) IsPermanentlyFailed(ctx context.Context, tag string) (bool, error) {
+	var permanent bool
+	err := r.pool.QueryRow(ctx,
+		"SELECT COALESCE((SELECT permanent FROM failed_releases WHERE tag = $1), FALSE)", tag).Scan(&permanent)
+	if err != nil {
+		return false, fmt.Errorf("check permanent failure %s: %w", tag, err)
+	}
+	return permanent, nil
+}
+
 // GetStats returns processing statistics.
 func (r *ReleaseRepo) GetStats(ctx context.Context) (totalReleases int, totalAircraft int, totalFlights int, err error) {
 	err = r.pool.QueryRow(ctx, `

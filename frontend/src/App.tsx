@@ -4,12 +4,14 @@ import {
   advancedSearch,
   getStats,
   getAircraft,
+  getFailedDates,
   type SearchResult,
   type AdvancedSearchResult,
   type Stats,
   type ExternalLink,
   type FlightWithAircraft,
   type Aircraft,
+  type FailedDate,
 } from "./api";
 
 type View =
@@ -78,6 +80,7 @@ export function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState<View>({ kind: "home" });
+  const [failedDates, setFailedDates] = useState<FailedDate[]>([]);
 
   // Advanced search fields
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -187,6 +190,7 @@ export function App() {
 
   useEffect(() => {
     getStats().then(setStats).catch(() => {});
+    getFailedDates().then(r => setFailedDates(r.failed_dates || [])).catch(() => {});
   }, []);
 
   // Quick search
@@ -330,7 +334,7 @@ export function App() {
         <UtcClock />
       </div>
 
-      {stats && <StatsBar stats={stats} />}
+      {stats && <StatsBar stats={stats} failedDates={failedDates} />}
 
       {/* Quick Search */}
       <form class="search-box" onSubmit={handleSubmit}>
@@ -393,6 +397,7 @@ export function App() {
           result={view.result}
           onViewAircraft={viewAircraftDate}
           onPageChange={(offset) => doSearch(query, offset)}
+          failedDates={failedDates}
         />
       )}
 
@@ -401,6 +406,7 @@ export function App() {
           result={view.result}
           onViewAircraft={viewAircraftDate}
           onPageChange={(offset) => doAdvancedSearch(offset)}
+          failedDates={failedDates}
         />
       )}
 
@@ -415,6 +421,7 @@ export function App() {
           loading={loading}
           onBack={goHome}
           onDateChange={(d) => changeDetailDate(view.icao, d)}
+          failedDates={failedDates}
         />
       )}
     </div>
@@ -434,29 +441,69 @@ function UtcClock() {
   return <span class="utc-clock">{now} UTC</span>;
 }
 
-function StatsBar({ stats }: { stats: Stats }) {
+function StatsBar({ stats, failedDates }: { stats: Stats; failedDates: FailedDate[] }) {
+  const [showFailed, setShowFailed] = useState(false);
+
   return (
-    <div class="stats-bar">
-      <span>
-        Days processed:{" "}
-        <span class="stat-value">{stats.total_releases.toLocaleString()}</span>
-      </span>
-      <span>
-        Aircraft:{" "}
-        <span class="stat-value">{stats.total_aircraft.toLocaleString()}</span>
-      </span>
-      <span>
-        Flights:{" "}
-        <span class="stat-value">{stats.total_flights.toLocaleString()}</span>
-      </span>
-      {stats.last_processed && (
-        <span>
-          Latest:{" "}
-          <span class="stat-value">
-            {new Date(stats.last_processed).toLocaleDateString()}
+    <div class="stats-bar-wrapper">
+      <div class="stats-bar">
+        <div class="stats-bar-left">
+          <span>
+            Days processed:{" "}
+            <span class="stat-value">{stats.total_releases.toLocaleString()}</span>
           </span>
-        </span>
+          <span>
+            Aircraft:{" "}
+            <span class="stat-value">{stats.total_aircraft.toLocaleString()}</span>
+          </span>
+          <span>
+            Flights:{" "}
+            <span class="stat-value">{stats.total_flights.toLocaleString()}</span>
+          </span>
+          {stats.oldest_date && stats.newest_date && (
+            <span>
+              Range:{" "}
+              <span class="stat-value">
+                {new Date(stats.oldest_date).toLocaleDateString()} — {new Date(stats.newest_date).toLocaleDateString()}
+              </span>
+            </span>
+          )}
+        </div>
+        {failedDates.length > 0 && (
+          <button
+            class={"failed-dates-btn" + (showFailed ? " active" : "")}
+            onClick={() => setShowFailed(!showFailed)}
+            title={`${failedDates.length} date(s) failed processing`}
+          >
+            ⚠ {failedDates.length}
+          </button>
+        )}
+      </div>
+      {showFailed && failedDates.length > 0 && (
+        <FailedDatesBanner dates={failedDates} />
       )}
+    </div>
+  );
+}
+
+function FailedDatesBanner({ dates, contextual }: { dates: FailedDate[]; contextual?: boolean }) {
+  if (dates.length === 0) return null;
+
+  return (
+    <div class={`failed-dates-banner${contextual ? " contextual" : ""}`}>
+      <div class="failed-dates-header">
+        ⚠ {contextual
+          ? `Data for ${dates.length === 1 ? "this date" : "some dates"} could not be processed`
+          : `${dates.length} date(s) could not be processed`}
+      </div>
+      <div class="failed-dates-list">
+        {dates.map(fd => (
+          <div key={fd.tag} class="failed-date-item">
+            <span class="failed-date">{formatDate(fd.date)}</span>
+            <span class="failed-reason">{fd.last_error}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -465,15 +512,27 @@ function SearchResults({
   result,
   onViewAircraft,
   onPageChange,
+  failedDates,
 }: {
   result: SearchResult;
   onViewAircraft: (icao: string, date: string) => void;
   onPageChange: (offset: number) => void;
+  failedDates: FailedDate[];
 }) {
   const isIcaoResult =
     result.type === "icao" &&
     result.results &&
     !Array.isArray(result.results);
+
+  // Collect dates from results to check for overlap with failed dates
+  const resultDates = new Set<string>();
+  if (isIcaoResult) {
+    const data = result.results as { aircraft: Aircraft | null; flights: FlightWithAircraft[] };
+    data.flights?.forEach(f => { if (f.date) resultDates.add(f.date.substring(0, 10)); });
+  } else {
+    (result.results as FlightWithAircraft[])?.forEach(f => { if (f.date) resultDates.add(f.date.substring(0, 10)); });
+  }
+  const relevantFailed = failedDates.filter(fd => resultDates.has(fd.date));
 
   if (isIcaoResult) {
     const data = result.results as {
@@ -484,6 +543,7 @@ function SearchResults({
     return (
       <div>
         <span class="result-type">ICAO Lookup</span>
+        {relevantFailed.length > 0 && <FailedDatesBanner dates={relevantFailed} contextual />}
         {data.aircraft && (
           <div class="card">
             <div class="aircraft-header">
@@ -526,6 +586,7 @@ function SearchResults({
   return (
     <div>
       <span class="result-type">{result.type} search</span>
+      {relevantFailed.length > 0 && <FailedDatesBanner dates={relevantFailed} contextual />}
       {flights && flights.length > 0 ? (
         <>
           <h2>{result.total} flight(s) found</h2>
@@ -552,14 +613,23 @@ function AdvancedResults({
   result,
   onViewAircraft,
   onPageChange,
+  failedDates,
 }: {
   result: AdvancedSearchResult;
   onViewAircraft: (icao: string, date: string) => void;
   onPageChange: (offset: number) => void;
+  failedDates: FailedDate[];
 }) {
+  const resultDates = new Set<string>();
+  result.flights?.forEach(f => { if (f.date) resultDates.add(f.date.substring(0, 10)); });
+  // Also check the date filters themselves
+  if (result.filters.date) resultDates.add(result.filters.date);
+  const relevantFailed = failedDates.filter(fd => resultDates.has(fd.date));
+
   return (
     <div>
       <span class="result-type">Advanced Search</span>
+      {relevantFailed.length > 0 && <FailedDatesBanner dates={relevantFailed} contextual />}
       <div class="filter-tags">
         {Object.entries(result.filters).map(([k, v]) => (
           <span key={k} class="filter-tag">{k}: {v}</span>
@@ -602,6 +672,7 @@ function AircraftDetail({
   loading,
   onBack,
   onDateChange,
+  failedDates,
 }: {
   icao: string;
   date: string;
@@ -612,7 +683,10 @@ function AircraftDetail({
   loading: boolean;
   onBack: () => void;
   onDateChange: (date: string) => void;
+  failedDates: FailedDate[];
 }) {
+  const relevantFailed = failedDates.filter(fd => fd.date === date);
+
   return (
     <div>
       <div style={{ marginBottom: "1rem" }}>
@@ -620,6 +694,7 @@ function AircraftDetail({
           &larr; Back to results
         </a>
       </div>
+      {relevantFailed.length > 0 && <FailedDatesBanner dates={relevantFailed} contextual />}
       <div class="card">
         <div class="aircraft-header">
           <div>
@@ -635,6 +710,17 @@ function AircraftDetail({
         </div>
 
         <div class="date-picker-row">
+          <button
+            class="date-nav-btn"
+            onClick={() => {
+              const d = new Date(date + "T00:00:00");
+              d.setDate(d.getDate() - 1);
+              onDateChange(d.toISOString().slice(0, 10));
+            }}
+            title="Previous day"
+          >
+            ◀
+          </button>
           <label>
             Date:
             <input
@@ -643,6 +729,17 @@ function AircraftDetail({
               onInput={(e) => onDateChange((e.target as HTMLInputElement).value)}
             />
           </label>
+          <button
+            class="date-nav-btn"
+            onClick={() => {
+              const d = new Date(date + "T00:00:00");
+              d.setDate(d.getDate() + 1);
+              onDateChange(d.toISOString().slice(0, 10));
+            }}
+            title="Next day"
+          >
+            ▶
+          </button>
         </div>
 
         {links.length > 0 && <ExternalLinks links={links} />}
@@ -684,6 +781,7 @@ function FlightTable({
             <th>Date</th>
             <th>First Seen</th>
             <th>Last Seen</th>
+            <th>Duration</th>
             {showIcao && <th>Reg</th>}
             {showIcao && <th>Type</th>}
           </tr>
@@ -711,6 +809,7 @@ function FlightTable({
                 <td>{formatDate(flightDate)}</td>
                 <td>{formatTime(f.first_seen)}</td>
                 <td>{formatTime(f.last_seen)}</td>
+                <td class="mono">{formatDuration(f.first_seen, f.last_seen)}</td>
                 {showIcao && <td>{f.registration || "-"}</td>}
                 {showIcao && <td>{f.type_code || "-"}</td>}
               </tr>
@@ -801,5 +900,19 @@ function formatTime(s: string): string {
     });
   } catch {
     return s;
+  }
+}
+
+function formatDuration(first: string, last: string): string {
+  try {
+    const ms = new Date(last).getTime() - new Date(first).getTime();
+    if (ms < 0 || isNaN(ms)) return "-";
+    const totalMin = Math.floor(ms / 60000);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    if (h > 0) return `${h}h ${m.toString().padStart(2, "0")}m`;
+    return `${m}m`;
+  } catch {
+    return "-";
   }
 }

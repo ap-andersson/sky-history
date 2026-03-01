@@ -4,7 +4,8 @@ export interface Stats {
   total_releases: number;
   total_aircraft: number;
   total_flights: number;
-  last_processed?: string;
+  oldest_date?: string;
+  newest_date?: string;
 }
 
 export interface Aircraft {
@@ -68,6 +69,17 @@ export interface AdvancedSearchResult {
   links?: ExternalLink[];
 }
 
+export interface FailedDate {
+  date: string;
+  tag: string;
+  last_error: string;
+  attempts: number;
+}
+
+export interface FailedDatesResult {
+  failed_dates: FailedDate[];
+}
+
 async function fetchJSON<T>(url: string): Promise<T> {
   const resp = await fetch(url);
   if (!resp.ok) {
@@ -123,4 +135,8 @@ export function advancedSearch(params: {
   if (params.limit) qs.set("limit", String(params.limit));
   if (params.offset != null) qs.set("offset", String(params.offset));
   return fetchJSON(`${API_BASE}/search/advanced?${qs.toString()}`);
+}
+
+export function getFailedDates(): Promise<FailedDatesResult> {
+  return fetchJSON(`${API_BASE}/failed-dates`);
 }

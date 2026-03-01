@@ -101,6 +101,14 @@ func (p *Processor) checkAndProcess(ctx context.Context, backfill bool) {
 	log.Println("Checking for new releases...")
 
 	isProcessed := func(tag string) (bool, error) {
+		// Skip permanently failed releases
+		permFailed, err := p.releaseRepo.IsPermanentlyFailed(ctx, tag)
+		if err != nil {
+			return false, err
+		}
+		if permFailed {
+			return true, nil // treat as already processed so we skip it
+		}
 		return p.releaseRepo.IsProcessed(ctx, tag)
 	}
 
@@ -165,6 +173,7 @@ func (p *Processor) processRelease(ctx context.Context, release github.ReleaseIn
 			return
 		}
 		log.Printf("Error downloading/extracting %s: %v", release.Tag, err)
+		p.recordFailure(ctx, release, err)
 		return
 	}
 	defer p.downloader.Cleanup(release.Tag)
@@ -177,6 +186,7 @@ func (p *Processor) processRelease(ctx context.Context, release github.ReleaseIn
 	aircraft, err := parser.ParseDirectory(extractDir, release.Date, p.cfg.ParseWorkers)
 	if err != nil {
 		log.Printf("Error parsing %s: %v", release.Tag, err)
+		p.recordFailure(ctx, release, err)
 		return
 	}
 
@@ -261,4 +271,17 @@ func (p *Processor) handleRateLimitError(ctx context.Context, err error) bool {
 	case <-ctx.Done():
 	}
 	return true
+}
+
+func (p *Processor) recordFailure(ctx context.Context, release github.ReleaseInfo, processingErr error) {
+	permanent, err := p.releaseRepo.RecordFailure(ctx, release.Tag, release.Date, processingErr.Error())
+	if err != nil {
+		log.Printf("Error recording failure for %s: %v", release.Tag, err)
+		return
+	}
+	if permanent {
+		log.Printf("Release %s permanently marked as failed after repeated failures — will not retry", release.Tag)
+	} else {
+		log.Printf("Release %s recorded as failed (attempt 1) — will retry next cycle", release.Tag)
+	}
 }

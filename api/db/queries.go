@@ -200,10 +200,15 @@ func (q *Queries) GetStats(ctx context.Context) (*models.Stats, error) {
 		return nil, fmt.Errorf("get stats: %w", err)
 	}
 
-	var lastDate *time.Time
-	err = q.pool.QueryRow(ctx, "SELECT MAX(date) FROM processed_releases").Scan(&lastDate)
-	if err == nil && lastDate != nil && !lastDate.IsZero() {
-		s.LastProcessed = lastDate
+	var minDate, maxDate *time.Time
+	err = q.pool.QueryRow(ctx, "SELECT MIN(date), MAX(date) FROM processed_releases").Scan(&minDate, &maxDate)
+	if err == nil {
+		if minDate != nil && !minDate.IsZero() {
+			s.OldestDate = minDate
+		}
+		if maxDate != nil && !maxDate.IsZero() {
+			s.NewestDate = maxDate
+		}
 	}
 
 	return &s, nil
@@ -243,6 +248,40 @@ type AdvancedFilter struct {
 	Date     *time.Time
 	DateFrom *time.Time
 	DateTo   *time.Time
+}
+
+// FailedDate represents a date that could not be processed.
+type FailedDate struct {
+	Date      string `json:"date"`
+	Tag       string `json:"tag"`
+	LastError string `json:"last_error"`
+	Attempts  int    `json:"attempts"`
+}
+
+// GetFailedDates returns all permanently failed release dates.
+func (q *Queries) GetFailedDates(ctx context.Context) ([]FailedDate, error) {
+	rows, err := q.pool.Query(ctx, `
+        SELECT date, tag, last_error, attempt_count
+        FROM failed_releases
+        WHERE permanent = TRUE
+        ORDER BY date DESC
+    `)
+	if err != nil {
+		return nil, fmt.Errorf("get failed dates: %w", err)
+	}
+	defer rows.Close()
+
+	var results []FailedDate
+	for rows.Next() {
+		var f FailedDate
+		var d time.Time
+		if err := rows.Scan(&d, &f.Tag, &f.LastError, &f.Attempts); err != nil {
+			return nil, fmt.Errorf("scan failed date: %w", err)
+		}
+		f.Date = d.Format("2006-01-02")
+		results = append(results, f)
+	}
+	return results, rows.Err()
 }
 
 // AdvancedSearch queries flights with combinable filters.

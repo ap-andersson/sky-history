@@ -37,6 +37,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/aircraft/{icao}", h.Aircraft)
 	mux.HandleFunc("GET /api/aircraft/{icao}/flights", h.AircraftFlights)
 	mux.HandleFunc("GET /api/flights/date/{date}", h.FlightsByDate)
+	mux.HandleFunc("GET /api/failed-dates", h.FailedDates)
 }
 
 // jsonResponse writes a JSON response.
@@ -435,4 +436,20 @@ func (h *Handler) AdvancedSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, result)
+}
+
+// FailedDates returns all dates that permanently failed processing.
+func (h *Handler) FailedDates(w http.ResponseWriter, r *http.Request) {
+	dates, err := h.queries.GetFailedDates(r.Context())
+	if err != nil {
+		log.Printf("Error getting failed dates: %v", err)
+		jsonError(w, http.StatusInternalServerError, "failed to get failed dates")
+		return
+	}
+	if dates == nil {
+		dates = []db.FailedDate{}
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"failed_dates": dates,
+	})
 }
