@@ -712,11 +712,7 @@ function AircraftDetail({
         <div class="date-picker-row">
           <button
             class="date-nav-btn"
-            onClick={() => {
-              const d = new Date(date + "T00:00:00");
-              d.setDate(d.getDate() - 1);
-              onDateChange(d.toISOString().slice(0, 10));
-            }}
+            onClick={() => onDateChange(shiftDate(date, -1))}
             title="Previous day"
           >
             ◀
@@ -726,16 +722,12 @@ function AircraftDetail({
             <input
               type="date"
               value={date}
-              onInput={(e) => onDateChange((e.target as HTMLInputElement).value)}
+              onChange={(e) => onDateChange((e.target as HTMLInputElement).value)}
             />
           </label>
           <button
             class="date-nav-btn"
-            onClick={() => {
-              const d = new Date(date + "T00:00:00");
-              d.setDate(d.getDate() + 1);
-              onDateChange(d.toISOString().slice(0, 10));
-            }}
+            onClick={() => onDateChange(shiftDate(date, 1))}
             title="Next day"
           >
             ▶
@@ -915,4 +907,13 @@ function formatDuration(first: string, last: string): string {
   } catch {
     return "-";
   }
+}
+
+function shiftDate(dateStr: string, days: number): string {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
