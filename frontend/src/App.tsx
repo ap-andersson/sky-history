@@ -116,6 +116,8 @@ export function App() {
 
   // Prevent pushState when navigating via popstate
   const skipPush = useRef(false);
+  // Track whether user has navigated within the SPA (vs direct URL load)
+  const hasNavHistory = useRef(false);
 
   // Push browser history when view changes
   const pushRoute = useCallback((route: Route) => {
@@ -127,6 +129,7 @@ export function App() {
     if (window.location.pathname + window.location.search !== path) {
       history.pushState(route, "", path);
     }
+    hasNavHistory.current = true;
   }, []);
 
   // Navigate to a route (from popstate or initial load)
@@ -490,7 +493,8 @@ export function App() {
           links={view.links}
           total={view.total}
           loading={loading}
-          onBack={goHome}
+          onBack={() => history.back()}
+          showBack={hasNavHistory.current}
           onDateChange={(d) => changeDetailDate(view.icao, d)}
           failedDates={failedDates}
         />
@@ -751,6 +755,7 @@ function AircraftDetail({
   total,
   loading,
   onBack,
+  showBack,
   onDateChange,
   failedDates,
 }: {
@@ -762,6 +767,7 @@ function AircraftDetail({
   total: number;
   loading: boolean;
   onBack: () => void;
+  showBack: boolean;
   onDateChange: (date: string) => void;
   failedDates: FailedDate[];
 }) {
@@ -769,11 +775,13 @@ function AircraftDetail({
 
   return (
     <div>
-      <div style={{ marginBottom: "1rem" }}>
-        <a href="#" onClick={(e) => { e.preventDefault(); onBack(); }}>
-          &larr; Back to results
-        </a>
-      </div>
+      {showBack && (
+        <div style={{ marginBottom: "1rem" }}>
+          <a href="#" onClick={(e) => { e.preventDefault(); onBack(); }}>
+            &larr; Back to results
+          </a>
+        </div>
+      )}
       {relevantFailed.length > 0 && <FailedDatesBanner dates={relevantFailed} contextual />}
       <div class="card">
         <div class="aircraft-header">
