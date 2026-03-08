@@ -866,9 +866,10 @@ function FlightTable({
                 {showIcao && (
                   <td>
                     <a
-                      href="#"
+                      href={`/aircraft/${encodeURIComponent(f.icao.toUpperCase())}/${flightDate}`}
                       class="mono"
                       onClick={(e) => {
+                        if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
                         e.preventDefault();
                         onViewAircraft(f.icao, flightDate);
                       }}
