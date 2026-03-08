@@ -241,10 +241,83 @@ func scanFlightsWithAircraft(rows pgx.Rows) ([]models.FlightWithAircraft, error)
 	return results, rows.Err()
 }
 
+// GetAircraftTypes returns all aircraft types with aircraft counts.
+func (q *Queries) GetAircraftTypes(ctx context.Context) ([]models.AircraftType, error) {
+	rows, err := q.pool.Query(ctx, `
+		SELECT at.id, at.type_code, at.description, COUNT(a.icao) as aircraft_count
+		FROM aircraft_types at
+		LEFT JOIN aircraft a ON a.aircraft_type_id = at.id
+		GROUP BY at.id, at.type_code, at.description
+		ORDER BY at.type_code
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("get aircraft types: %w", err)
+	}
+	defer rows.Close()
+
+	var results []models.AircraftType
+	for rows.Next() {
+		var t models.AircraftType
+		if err := rows.Scan(&t.ID, &t.TypeCode, &t.Description, &t.AircraftCount); err != nil {
+			return nil, fmt.Errorf("scan aircraft type: %w", err)
+		}
+		results = append(results, t)
+	}
+	return results, rows.Err()
+}
+
+// TypeCodeExists checks if a type code exists in the aircraft_types table.
+func (q *Queries) TypeCodeExists(ctx context.Context, typeCode string) (bool, error) {
+	var exists bool
+	err := q.pool.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM aircraft_types WHERE UPPER(type_code) = UPPER($1))",
+		typeCode).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check type code exists: %w", err)
+	}
+	return exists, nil
+}
+
+// SearchByType finds flights for aircraft matching a type code.
+func (q *Queries) SearchByType(ctx context.Context, typeCode string, limit, offset int) ([]models.FlightWithAircraft, int, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 50
+	}
+
+	var total int
+	err := q.pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM flights f JOIN aircraft a ON a.icao = f.icao WHERE UPPER(a.type_code) = UPPER($1)",
+		typeCode).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count flights by type: %w", err)
+	}
+
+	rows, err := q.pool.Query(ctx, `
+		SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen,
+		       COALESCE(a.registration, ''), COALESCE(a.type_code, ''), COALESCE(a.description, '')
+		FROM flights f
+		JOIN aircraft a ON a.icao = f.icao
+		WHERE UPPER(a.type_code) = UPPER($1)
+		ORDER BY f.date DESC, f.first_seen DESC
+		LIMIT $2 OFFSET $3
+	`, typeCode, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("search flights by type: %w", err)
+	}
+	defer rows.Close()
+
+	results, err := scanFlightsWithAircraft(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return results, total, nil
+}
+
 // AdvancedFilter holds the filters for the advanced search endpoint.
 type AdvancedFilter struct {
 	ICAO     string
 	Callsign string
+	TypeCode string
 	Date     *time.Time
 	DateFrom *time.Time
 	DateTo   *time.Time
@@ -294,6 +367,9 @@ func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, o
 	var args []interface{}
 	argN := 1
 
+	// Track whether we need the aircraft JOIN in the count query
+	needsAircraftJoin := false
+
 	if f.ICAO != "" {
 		conditions = append(conditions, fmt.Sprintf("UPPER(f.icao) = UPPER($%d)", argN))
 		args = append(args, f.ICAO)
@@ -303,6 +379,12 @@ func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, o
 		conditions = append(conditions, fmt.Sprintf("f.callsign ILIKE $%d", argN))
 		args = append(args, f.Callsign+"%")
 		argN++
+	}
+	if f.TypeCode != "" {
+		conditions = append(conditions, fmt.Sprintf("UPPER(a.type_code) = UPPER($%d)", argN))
+		args = append(args, f.TypeCode)
+		argN++
+		needsAircraftJoin = true
 	}
 	if f.Date != nil {
 		conditions = append(conditions, fmt.Sprintf("f.date = $%d", argN))
@@ -322,9 +404,14 @@ func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, o
 
 	where := strings.Join(conditions, " AND ")
 
-	// Count
+	// Count — include aircraft JOIN when filtering by type
 	var total int
-	countSQL := "SELECT COUNT(*) FROM flights f WHERE " + where
+	var countSQL string
+	if needsAircraftJoin {
+		countSQL = "SELECT COUNT(*) FROM flights f JOIN aircraft a ON a.icao = f.icao WHERE " + where
+	} else {
+		countSQL = "SELECT COUNT(*) FROM flights f WHERE " + where
+	}
 	err := q.pool.QueryRow(ctx, countSQL, args...).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("advanced search count: %w", err)
@@ -332,14 +419,14 @@ func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, o
 
 	// Query with aircraft join
 	querySQL := fmt.Sprintf(`
-        SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen,
-               COALESCE(a.registration, ''), COALESCE(a.type_code, ''), COALESCE(a.description, '')
-        FROM flights f
-        LEFT JOIN aircraft a ON a.icao = f.icao
-        WHERE %s
-        ORDER BY f.date DESC, f.first_seen DESC
-        LIMIT $%d OFFSET $%d
-    `, where, argN, argN+1)
+		SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen,
+		       COALESCE(a.registration, ''), COALESCE(a.type_code, ''), COALESCE(a.description, '')
+		FROM flights f
+		LEFT JOIN aircraft a ON a.icao = f.icao
+		WHERE %s
+		ORDER BY f.date DESC, f.first_seen DESC
+		LIMIT $%d OFFSET $%d
+	`, where, argN, argN+1)
 
 	args = append(args, limit, offset)
 
@@ -354,4 +441,120 @@ func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, o
 		return nil, 0, err
 	}
 	return results, total, nil
+}
+
+// GetPeriodStats returns aggregated statistics for a date range.
+// seriesGroupBy should be "day" or "month" to control time series granularity.
+func (q *Queries) GetPeriodStats(ctx context.Context, startDate, endDate time.Time, seriesGroupBy string) (*models.PeriodStats, error) {
+	ps := &models.PeriodStats{
+		StartDate: startDate.Format("2006-01-02"),
+		EndDate:   endDate.Format("2006-01-02"),
+	}
+
+	// Total flights and unique aircraft in period
+	err := q.pool.QueryRow(ctx, `
+		SELECT COUNT(*), COUNT(DISTINCT f.icao)
+		FROM flights f
+		WHERE f.date >= $1 AND f.date <= $2
+	`, startDate, endDate).Scan(&ps.TotalFlights, &ps.TotalAircraft)
+	if err != nil {
+		return nil, fmt.Errorf("period stats counts: %w", err)
+	}
+
+	// Days processed in period
+	err = q.pool.QueryRow(ctx, `
+		SELECT COUNT(DISTINCT date)
+		FROM processed_releases
+		WHERE date >= $1 AND date <= $2
+	`, startDate, endDate).Scan(&ps.DaysProcessed)
+	if err != nil {
+		return nil, fmt.Errorf("period stats days processed: %w", err)
+	}
+
+	// Flights by aircraft type
+	typeRows, err := q.pool.Query(ctx, `
+		SELECT COALESCE(NULLIF(a.type_code, ''), 'Unknown') as tc,
+		       COALESCE(MAX(NULLIF(a.description, '')), '') as descr,
+		       COUNT(*) as cnt
+		FROM flights f
+		LEFT JOIN aircraft a ON a.icao = f.icao
+		WHERE f.date >= $1 AND f.date <= $2
+		GROUP BY tc
+		ORDER BY cnt DESC
+	`, startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("period stats flights by type: %w", err)
+	}
+	defer typeRows.Close()
+
+	for typeRows.Next() {
+		var t models.TypeFlightCount
+		if err := typeRows.Scan(&t.TypeCode, &t.Description, &t.FlightCount); err != nil {
+			return nil, fmt.Errorf("scan type flight count: %w", err)
+		}
+		ps.FlightsByType = append(ps.FlightsByType, t)
+	}
+	if err := typeRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Busiest day in period
+	var busiestDay *string
+	err = q.pool.QueryRow(ctx, `
+		SELECT f.date::text
+		FROM flights f
+		WHERE f.date >= $1 AND f.date <= $2
+		GROUP BY f.date
+		ORDER BY COUNT(*) DESC
+		LIMIT 1
+	`, startDate, endDate).Scan(&busiestDay)
+	if err != nil && err != pgx.ErrNoRows {
+		return nil, fmt.Errorf("period stats busiest day: %w", err)
+	}
+	if busiestDay != nil {
+		ps.BusiestDay = *busiestDay
+		// Get flight count for busiest day
+		_ = q.pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM flights WHERE date = $1
+		`, ps.BusiestDay).Scan(&ps.BusiestDayFlights)
+	}
+
+	// Flight time series
+	var seriesSQL string
+	if seriesGroupBy == "month" {
+		seriesSQL = `
+			SELECT TO_CHAR(f.date, 'YYYY-MM') as label, COUNT(*) as cnt
+			FROM flights f
+			WHERE f.date >= $1 AND f.date <= $2
+			GROUP BY label
+			ORDER BY label
+		`
+	} else {
+		seriesSQL = `
+			SELECT f.date::text as label, COUNT(*) as cnt
+			FROM flights f
+			WHERE f.date >= $1 AND f.date <= $2
+			GROUP BY f.date
+			ORDER BY f.date
+		`
+	}
+
+	seriesRows, err := q.pool.Query(ctx, seriesSQL, startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("period stats flight series: %w", err)
+	}
+	defer seriesRows.Close()
+
+	for seriesRows.Next() {
+		var sp models.SeriesPoint
+		if err := seriesRows.Scan(&sp.Label, &sp.Count); err != nil {
+			return nil, fmt.Errorf("scan series point: %w", err)
+		}
+		ps.FlightSeries = append(ps.FlightSeries, sp)
+	}
+	if err := seriesRows.Err(); err != nil {
+		return nil, err
+	}
+
+	return ps, nil
 }

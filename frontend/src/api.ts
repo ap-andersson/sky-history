@@ -80,6 +80,13 @@ export interface FailedDatesResult {
   failed_dates: FailedDate[];
 }
 
+export interface AircraftType {
+  id: number;
+  type_code: string;
+  description?: string;
+  aircraft_count: number;
+}
+
 async function fetchJSON<T>(url: string): Promise<T> {
   const resp = await fetch(url);
   if (!resp.ok) {
@@ -120,6 +127,7 @@ export function getAircraftFlights(
 export function advancedSearch(params: {
   icao?: string;
   callsign?: string;
+  type_code?: string;
   date?: string;
   date_from?: string;
   date_to?: string;
@@ -129,6 +137,7 @@ export function advancedSearch(params: {
   const qs = new URLSearchParams();
   if (params.icao) qs.set("icao", params.icao);
   if (params.callsign) qs.set("callsign", params.callsign);
+  if (params.type_code) qs.set("type_code", params.type_code);
   if (params.date) qs.set("date", params.date);
   if (params.date_from) qs.set("date_from", params.date_from);
   if (params.date_to) qs.set("date_to", params.date_to);
@@ -139,4 +148,39 @@ export function advancedSearch(params: {
 
 export function getFailedDates(): Promise<FailedDatesResult> {
   return fetchJSON(`${API_BASE}/failed-dates`);
+}
+
+export function getAircraftTypes(): Promise<{ types: AircraftType[] }> {
+  return fetchJSON(`${API_BASE}/aircraft-types`);
+}
+
+export interface TypeFlightCount {
+  type_code: string;
+  description?: string;
+  flight_count: number;
+}
+
+export interface SeriesPoint {
+  label: string;
+  count: number;
+}
+
+export interface PeriodStats {
+  period: string;
+  start_date: string;
+  end_date: string;
+  total_flights: number;
+  total_aircraft: number;
+  days_processed: number;
+  busiest_day?: string;
+  busiest_day_flights: number;
+  flights_by_type: TypeFlightCount[];
+  flight_series: SeriesPoint[];
+}
+
+export function getPeriodStats(period: string, date?: string): Promise<PeriodStats> {
+  const qs = new URLSearchParams();
+  qs.set("period", period);
+  if (date) qs.set("date", date);
+  return fetchJSON(`${API_BASE}/stats/period?${qs.toString()}`);
 }

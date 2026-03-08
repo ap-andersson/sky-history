@@ -59,6 +59,7 @@ func main() {
 		releaseRepo:  db.NewReleaseRepo(pool),
 		aircraftRepo: db.NewAircraftRepo(pool),
 		flightRepo:   db.NewFlightRepo(pool),
+		typeRepo:     db.NewAircraftTypeRepo(pool),
 	}
 
 	// Backfill if configured, otherwise do a single poll immediately
@@ -95,6 +96,7 @@ type Processor struct {
 	releaseRepo  *db.ReleaseRepo
 	aircraftRepo *db.AircraftRepo
 	flightRepo   *db.FlightRepo
+	typeRepo     *db.AircraftTypeRepo
 }
 
 func (p *Processor) checkAndProcess(ctx context.Context, backfill bool) {
@@ -207,7 +209,7 @@ func (p *Processor) processRelease(ctx context.Context, release github.ReleaseIn
 	}
 	defer tx.Rollback(ctx) // no-op after commit
 
-	aircraftCount, err := p.aircraftRepo.UpsertBatch(ctx, tx, aircraft)
+	aircraftCount, err := p.aircraftRepo.UpsertBatch(ctx, tx, aircraft, p.typeRepo)
 	if err != nil {
 		log.Printf("Error upserting aircraft for %s: %v", release.Tag, err)
 		return

@@ -19,8 +19,9 @@ func NewAircraftRepo(pool *pgxpool.Pool) *AircraftRepo {
 }
 
 // UpsertBatch inserts or updates multiple aircraft records.
-// Uses pgx.CopyFrom for initial insert attempt, falls back to upsert for conflicts.
-func (r *AircraftRepo) UpsertBatch(ctx context.Context, tx pgx.Tx, aircraft []models.ParsedAircraft) (int, error) {
+// For aircraft with a non-empty TypeCode, it ensures the type exists in aircraft_types
+// and links the aircraft to it via aircraft_type_id.
+func (r *AircraftRepo) UpsertBatch(ctx context.Context, tx pgx.Tx, aircraft []models.ParsedAircraft, typeRepo *AircraftTypeRepo) (int, error) {
 	if len(aircraft) == 0 {
 		return 0, nil
 	}
@@ -30,15 +31,26 @@ func (r *AircraftRepo) UpsertBatch(ctx context.Context, tx pgx.Tx, aircraft []mo
 		if a.ICAO == "" {
 			continue
 		}
+
+		var typeID *int
+		if a.TypeCode != "" {
+			id, err := typeRepo.EnsureType(ctx, tx, a.TypeCode, a.Description)
+			if err != nil {
+				return count, fmt.Errorf("ensure type for aircraft %s: %w", a.ICAO, err)
+			}
+			typeID = &id
+		}
+
 		_, err := tx.Exec(ctx, `
-            INSERT INTO aircraft (icao, registration, type_code, description, updated_at)
-            VALUES ($1, $2, $3, $4, NOW())
-            ON CONFLICT (icao) DO UPDATE SET
-                registration = COALESCE(NULLIF(EXCLUDED.registration, ''), aircraft.registration),
-                type_code = COALESCE(NULLIF(EXCLUDED.type_code, ''), aircraft.type_code),
-                description = COALESCE(NULLIF(EXCLUDED.description, ''), aircraft.description),
-                updated_at = NOW()
-        `, a.ICAO, a.Registration, a.TypeCode, a.Description)
+			INSERT INTO aircraft (icao, registration, type_code, description, aircraft_type_id, updated_at)
+			VALUES ($1, $2, $3, $4, $5, NOW())
+			ON CONFLICT (icao) DO UPDATE SET
+				registration = COALESCE(NULLIF(EXCLUDED.registration, ''), aircraft.registration),
+				type_code = COALESCE(NULLIF(EXCLUDED.type_code, ''), aircraft.type_code),
+				description = COALESCE(NULLIF(EXCLUDED.description, ''), aircraft.description),
+				aircraft_type_id = COALESCE(EXCLUDED.aircraft_type_id, aircraft.aircraft_type_id),
+				updated_at = NOW()
+		`, a.ICAO, a.Registration, a.TypeCode, a.Description, typeID)
 		if err != nil {
 			return count, fmt.Errorf("upsert aircraft %s: %w", a.ICAO, err)
 		}

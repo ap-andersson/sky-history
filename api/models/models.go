@@ -43,3 +43,38 @@ type ExternalLink struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
 }
+
+// AircraftType represents a unique aircraft type with its count.
+type AircraftType struct {
+	ID            int    `json:"id"`
+	TypeCode      string `json:"type_code"`
+	Description   string `json:"description,omitempty"`
+	AircraftCount int    `json:"aircraft_count"`
+}
+
+// PeriodStats holds aggregated statistics for a time period.
+type PeriodStats struct {
+	Period             string            `json:"period"`
+	StartDate          string            `json:"start_date"`
+	EndDate            string            `json:"end_date"`
+	TotalFlights       int               `json:"total_flights"`
+	TotalAircraft      int               `json:"total_aircraft"`
+	DaysProcessed      int               `json:"days_processed"`
+	BusiestDay         string            `json:"busiest_day,omitempty"`
+	BusiestDayFlights  int               `json:"busiest_day_flights"`
+	FlightsByType      []TypeFlightCount `json:"flights_by_type"`
+	FlightSeries       []SeriesPoint     `json:"flight_series"`
+}
+
+// TypeFlightCount holds a type code and its flight count.
+type TypeFlightCount struct {
+	TypeCode    string `json:"type_code"`
+	Description string `json:"description,omitempty"`
+	FlightCount int    `json:"flight_count"`
+}
+
+// SeriesPoint represents one data point in a time series chart.
+type SeriesPoint struct {
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}

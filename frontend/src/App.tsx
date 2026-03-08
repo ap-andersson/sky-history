@@ -5,6 +5,8 @@ import {
   getStats,
   getAircraft,
   getFailedDates,
+  getAircraftTypes,
+  getPeriodStats,
   type SearchResult,
   type AdvancedSearchResult,
   type Stats,
@@ -12,20 +14,24 @@ import {
   type FlightWithAircraft,
   type Aircraft,
   type FailedDate,
+  type AircraftType,
+  type PeriodStats,
 } from "./api";
 
 type View =
   | { kind: "home" }
   | { kind: "quickResults"; result: SearchResult }
   | { kind: "advancedResults"; result: AdvancedSearchResult }
-  | { kind: "detail"; icao: string; date: string; aircraft: Aircraft | null; flights: FlightWithAircraft[]; links: ExternalLink[]; total: number; offset: number };
+  | { kind: "detail"; icao: string; date: string; aircraft: Aircraft | null; flights: FlightWithAircraft[]; links: ExternalLink[]; total: number; offset: number }
+  | { kind: "stats"; data: PeriodStats };
 
 // Serializable route info for history state
 type Route =
   | { kind: "home" }
   | { kind: "search"; q: string; offset?: number }
-  | { kind: "advanced"; icao?: string; callsign?: string; date?: string; date_from?: string; date_to?: string; offset?: number }
-  | { kind: "detail"; icao: string; date: string };
+  | { kind: "advanced"; icao?: string; callsign?: string; type_code?: string; date?: string; date_from?: string; date_to?: string; offset?: number }
+  | { kind: "detail"; icao: string; date: string }
+  | { kind: "stats"; period?: string; date?: string };
 
 function routeToPath(route: Route): string {
   switch (route.kind) {
@@ -41,6 +47,7 @@ function routeToPath(route: Route): string {
       const p = new URLSearchParams();
       if (route.icao) p.set("icao", route.icao);
       if (route.callsign) p.set("callsign", route.callsign);
+      if (route.type_code) p.set("type_code", route.type_code);
       if (route.date) p.set("date", route.date);
       if (route.date_from) p.set("date_from", route.date_from);
       if (route.date_to) p.set("date_to", route.date_to);
@@ -49,6 +56,13 @@ function routeToPath(route: Route): string {
     }
     case "detail":
       return `/aircraft/${route.icao}/${route.date}`;
+    case "stats": {
+      const p = new URLSearchParams();
+      if (route.period) p.set("period", route.period);
+      if (route.date) p.set("date", route.date);
+      const qs = p.toString();
+      return qs ? `/stats?${qs}` : "/stats";
+    }
   }
 }
 
@@ -65,10 +79,18 @@ function parseRoute(path: string, qs: URLSearchParams): Route {
       kind: "advanced",
       icao: qs.get("icao") || undefined,
       callsign: qs.get("callsign") || undefined,
+      type_code: qs.get("type_code") || undefined,
       date: qs.get("date") || undefined,
       date_from: qs.get("date_from") || undefined,
       date_to: qs.get("date_to") || undefined,
       offset: Number(qs.get("offset")) || 0,
+    };
+  }
+  if (path === "/stats") {
+    return {
+      kind: "stats",
+      period: qs.get("period") || undefined,
+      date: qs.get("date") || undefined,
     };
   }
   return { kind: "home" };
@@ -81,11 +103,13 @@ export function App() {
   const [error, setError] = useState("");
   const [view, setView] = useState<View>({ kind: "home" });
   const [failedDates, setFailedDates] = useState<FailedDate[]>([]);
+  const [aircraftTypes, setAircraftTypes] = useState<AircraftType[]>([]);
 
   // Advanced search fields
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [advIcao, setAdvIcao] = useState("");
   const [advCallsign, setAdvCallsign] = useState("");
+  const [advTypeCode, setAdvTypeCode] = useState("");
   const [advDate, setAdvDate] = useState("");
   const [advDateFrom, setAdvDateFrom] = useState("");
   const [advDateTo, setAdvDateTo] = useState("");
@@ -128,6 +152,7 @@ export function App() {
         setShowAdvanced(true);
         setAdvIcao(route.icao || "");
         setAdvCallsign(route.callsign || "");
+        setAdvTypeCode(route.type_code || "");
         setAdvDate(route.date || "");
         setAdvDateFrom(route.date_from || "");
         setAdvDateTo(route.date_to || "");
@@ -135,6 +160,7 @@ export function App() {
         try {
           const res = await advancedSearch({
             icao: route.icao, callsign: route.callsign,
+            type_code: route.type_code,
             date: route.date, date_from: route.date_from, date_to: route.date_to,
             limit: 50, offset: route.offset || 0,
           });
@@ -165,6 +191,17 @@ export function App() {
           setLoading(false);
         }
         break;
+      case "stats":
+        setLoading(true);
+        try {
+          const data = await getPeriodStats(route.period || "week", route.date);
+          setView({ kind: "stats", data });
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "Failed to load statistics");
+        } finally {
+          setLoading(false);
+        }
+        break;
     }
   }, []);
 
@@ -191,6 +228,7 @@ export function App() {
   useEffect(() => {
     getStats().then(setStats).catch(() => {});
     getFailedDates().then(r => setFailedDates(r.failed_dates || [])).catch(() => {});
+    getAircraftTypes().then(r => setAircraftTypes(r.types || [])).catch(() => {});
   }, []);
 
   // Quick search
@@ -221,7 +259,7 @@ export function App() {
   // Advanced search
   const doAdvancedSearch = useCallback(
     async (offset = 0) => {
-      if (!advIcao && !advCallsign && !advDate && !advDateFrom && !advDateTo) {
+      if (!advIcao && !advCallsign && !advTypeCode && !advDate && !advDateFrom && !advDateTo) {
         setError("Please fill in at least one filter");
         return;
       }
@@ -231,6 +269,7 @@ export function App() {
         const res = await advancedSearch({
           icao: advIcao || undefined,
           callsign: advCallsign || undefined,
+          type_code: advTypeCode || undefined,
           date: advDate || undefined,
           date_from: advDateFrom || undefined,
           date_to: advDateTo || undefined,
@@ -242,6 +281,7 @@ export function App() {
           kind: "advanced",
           icao: advIcao || undefined,
           callsign: advCallsign || undefined,
+          type_code: advTypeCode || undefined,
           date: advDate || undefined,
           date_from: advDateFrom || undefined,
           date_to: advDateTo || undefined,
@@ -253,7 +293,7 @@ export function App() {
         setLoading(false);
       }
     },
-    [advIcao, advCallsign, advDate, advDateFrom, advDateTo, pushRoute]
+    [advIcao, advCallsign, advTypeCode, advDate, advDateFrom, advDateTo, pushRoute]
   );
 
   const handleAdvancedSubmit = (e: Event) => {
@@ -324,6 +364,20 @@ export function App() {
     pushRoute({ kind: "home" });
   };
 
+  const goStats = useCallback(async (period?: string, date?: string) => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await getPeriodStats(period || "week", date);
+      setView({ kind: "stats", data });
+      pushRoute({ kind: "stats", period: data.period, date: data.start_date });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load statistics");
+    } finally {
+      setLoading(false);
+    }
+  }, [pushRoute]);
+
   return (
     <div>
       <div class="header" onClick={goHome} style={{ cursor: "pointer" }}>
@@ -334,13 +388,13 @@ export function App() {
         <UtcClock />
       </div>
 
-      {stats && <StatsBar stats={stats} failedDates={failedDates} />}
+      {stats && <StatsBar stats={stats} failedDates={failedDates} onStatsClick={() => goStats()} />}
 
       {/* Quick Search */}
       <form class="search-box" onSubmit={handleSubmit}>
         <input
           type="text"
-          placeholder="Search by callsign, ICAO hex, or registration..."
+          placeholder="Search by callsign, ICAO hex, registration, or type..."
           value={query}
           onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
           autofocus
@@ -369,6 +423,23 @@ export function App() {
             <label>
               <span>Callsign</span>
               <input type="text" placeholder="e.g. RYR" value={advCallsign} onInput={(e) => setAdvCallsign((e.target as HTMLInputElement).value)} />
+            </label>
+            <label>
+              <span>Aircraft Type</span>
+              <input
+                type="text"
+                list="aircraft-types-list"
+                placeholder="e.g. B738"
+                value={advTypeCode}
+                onInput={(e) => setAdvTypeCode((e.target as HTMLInputElement).value)}
+              />
+              <datalist id="aircraft-types-list">
+                {aircraftTypes.map(t => (
+                  <option key={t.id} value={t.type_code}>
+                    {t.description ? `${t.type_code} \u2014 ${t.description}` : t.type_code}
+                  </option>
+                ))}
+              </datalist>
             </label>
             <label>
               <span>Date</span>
@@ -424,6 +495,14 @@ export function App() {
           failedDates={failedDates}
         />
       )}
+
+      {view.kind === "stats" && (
+        <StatsPage
+          data={view.data}
+          loading={loading}
+          onPeriodChange={(period, date) => goStats(period, date)}
+        />
+      )}
     </div>
   );
 }
@@ -441,7 +520,7 @@ function UtcClock() {
   return <span class="utc-clock">{now} UTC</span>;
 }
 
-function StatsBar({ stats, failedDates }: { stats: Stats; failedDates: FailedDate[] }) {
+function StatsBar({ stats, failedDates, onStatsClick }: { stats: Stats; failedDates: FailedDate[]; onStatsClick: () => void }) {
   const [showFailed, setShowFailed] = useState(false);
 
   return (
@@ -468,6 +547,7 @@ function StatsBar({ stats, failedDates }: { stats: Stats; failedDates: FailedDat
               </span>
             </span>
           )}
+          <a href="#" class="stats-link" onClick={(e) => { e.preventDefault(); onStatsClick(); }}>📊 Statistics</a>
         </div>
         {failedDates.length > 0 && (
           <button
@@ -884,6 +964,23 @@ function formatDate(s: string): string {
   }
 }
 
+function formatDateWithWeekday(s: string): string {
+  try {
+    const d = new Date(s + "T00:00:00");
+    const date = d.toLocaleDateString();
+    const weekday = d.toLocaleDateString(undefined, { weekday: "long" });
+    return `${date}, ${weekday}`;
+  } catch {
+    return s;
+  }
+}
+
+function shortCount(n: number): string {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  return String(n);
+}
+
 function formatTime(s: string): string {
   try {
     return new Date(s).toLocaleTimeString([], {
@@ -907,6 +1004,195 @@ function formatDuration(first: string, last: string): string {
   } catch {
     return "-";
   }
+}
+
+function StatsPage({
+  data,
+  loading,
+  onPeriodChange,
+}: {
+  data: PeriodStats;
+  loading: boolean;
+  onPeriodChange: (period: string, date?: string) => void;
+}) {
+  const periods = ["day", "week", "month", "year"] as const;
+  const [typeFilter, setTypeFilter] = useState("");
+  const [showAllTypes, setShowAllTypes] = useState(false);
+
+  const shiftPeriod = (dir: -1 | 1) => {
+    const start = new Date(data.start_date + "T00:00:00");
+    let newDate: Date;
+    switch (data.period) {
+      case "day":
+        newDate = new Date(start);
+        newDate.setDate(start.getDate() + dir);
+        break;
+      case "week":
+        newDate = new Date(start);
+        newDate.setDate(start.getDate() + 7 * dir);
+        break;
+      case "month":
+        newDate = new Date(start);
+        newDate.setMonth(start.getMonth() + dir);
+        break;
+      case "year":
+        newDate = new Date(start);
+        newDate.setFullYear(start.getFullYear() + dir);
+        break;
+      default:
+        return;
+    }
+    const y = newDate.getFullYear();
+    const m = String(newDate.getMonth() + 1).padStart(2, "0");
+    const d = String(newDate.getDate()).padStart(2, "0");
+    setTypeFilter("");
+    setShowAllTypes(false);
+    onPeriodChange(data.period, `${y}-${m}-${d}`);
+  };
+
+  const periodLabel = () => {
+    const s = formatDate(data.start_date);
+    const e = formatDate(data.end_date);
+    if (data.period === "day") return s;
+    if (data.period === "month") {
+      const d = new Date(data.start_date + "T00:00:00");
+      return d.toLocaleDateString(undefined, { year: "numeric", month: "long" });
+    }
+    if (data.period === "year") {
+      return new Date(data.start_date + "T00:00:00").getFullYear().toString();
+    }
+    return `${s} — ${e}`;
+  };
+
+  const maxCount = data.flight_series?.length
+    ? Math.max(...data.flight_series.map(p => p.count))
+    : 0;
+
+  // Filter flights by type
+  const allTypes = data.flights_by_type || [];
+  const filterUpper = typeFilter.trim().toUpperCase();
+  const filteredTypes = filterUpper
+    ? allTypes.filter(t =>
+        t.type_code.toUpperCase().includes(filterUpper) ||
+        (t.description || "").toUpperCase().includes(filterUpper)
+      )
+    : allTypes;
+  const displayTypes = (showAllTypes || filterUpper) ? filteredTypes : filteredTypes.slice(0, 50);
+  const hasMore = !filterUpper && !showAllTypes && filteredTypes.length > 50;
+
+  return (
+    <div class="stats-page">
+      <div class="period-selector">
+        {periods.map(p => (
+          <button
+            key={p}
+            class={data.period === p ? "period-btn active" : "period-btn"}
+            onClick={() => { setTypeFilter(""); setShowAllTypes(false); onPeriodChange(p, data.start_date); }}
+          >
+            {p.charAt(0).toUpperCase() + p.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      <div class="period-nav">
+        <button class="date-nav-btn" onClick={() => shiftPeriod(-1)} title="Previous">◀</button>
+        <span class="period-label">{periodLabel()}</span>
+        <button class="date-nav-btn" onClick={() => shiftPeriod(1)} title="Next">▶</button>
+      </div>
+
+      {loading ? (
+        <div class="loading">Loading statistics...</div>
+      ) : (
+        <>
+          <div class="stats-cards">
+            <div class="stat-card">
+              <div class="stat-card-value">{data.total_flights.toLocaleString()}</div>
+              <div class="stat-card-label">Flights</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-card-value">{data.total_aircraft.toLocaleString()}</div>
+              <div class="stat-card-label">Aircraft</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-card-value">{data.days_processed}</div>
+              <div class="stat-card-label">Days Processed</div>
+            </div>
+            {data.busiest_day && (
+              <div class="stat-card">
+                <div class="stat-card-value">{data.busiest_day_flights.toLocaleString()}</div>
+                <div class="stat-card-label">Busiest Day</div>
+                <div class="stat-card-sub">{formatDateWithWeekday(data.busiest_day)}</div>
+              </div>
+            )}
+          </div>
+
+          {data.flight_series && data.flight_series.length > 0 && (
+            <div class="card">
+              <h2>Flights per {data.period === "year" ? "Month" : "Day"}</h2>
+              <div class="chart-container">
+                {data.flight_series.map(p => {
+                  const pct = maxCount > 0 ? (p.count / maxCount) * 100 : 0;
+                  const shortLabel = data.period === "year"
+                    ? new Date(p.label + "-01T00:00:00").toLocaleDateString(undefined, { month: "short" })
+                    : new Date(p.label + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" });
+                  return (
+                    <div class="chart-bar-wrapper" key={p.label} title={`${p.label}: ${p.count.toLocaleString()} flights`}>
+                      <div class="chart-bar" style={{ height: `${pct}%` }} />
+                      <span class="chart-label">{shortLabel}</span>
+                      <span class="chart-count">{shortCount(p.count)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {allTypes.length > 0 && (
+            <div class="card" style={{ padding: 0, overflow: "auto" }}>
+              <div class="type-table-header">
+                <h2>Flights by Aircraft Type</h2>
+                <input
+                  type="text"
+                  class="type-filter-input"
+                  placeholder="Filter types..."
+                  value={typeFilter}
+                  onInput={(e) => setTypeFilter((e.target as HTMLInputElement).value)}
+                />
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Type</th>
+                    <th>Description</th>
+                    <th>Flights</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayTypes.map((t, i) => (
+                    <tr key={i}>
+                      <td class="mono">{t.type_code}</td>
+                      <td>{t.description || "-"}</td>
+                      <td>{t.flight_count.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {hasMore && (
+                <div class="view-all-row">
+                  <button class="view-all-btn" onClick={() => setShowAllTypes(true)}>
+                    View all ({filteredTypes.length})
+                  </button>
+                </div>
+              )}
+              {displayTypes.length === 0 && (
+                <div class="empty" style={{ padding: "1rem" }}>No matching types</div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 function shiftDate(dateStr: string, days: number): string {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/sky-history/api/db"
 	"github.com/sky-history/api/links"
+	"github.com/sky-history/api/models"
 )
 
 var (
@@ -32,8 +33,10 @@ func NewHandler(queries *db.Queries, linkGen *links.Generator) *Handler {
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", h.Health)
 	mux.HandleFunc("GET /api/stats", h.Stats)
+	mux.HandleFunc("GET /api/stats/period", h.PeriodStats)
 	mux.HandleFunc("GET /api/search", h.Search)
 	mux.HandleFunc("GET /api/search/advanced", h.AdvancedSearch)
+	mux.HandleFunc("GET /api/aircraft-types", h.AircraftTypes)
 	mux.HandleFunc("GET /api/aircraft/{icao}", h.Aircraft)
 	mux.HandleFunc("GET /api/aircraft/{icao}/flights", h.AircraftFlights)
 	mux.HandleFunc("GET /api/flights/date/{date}", h.FlightsByDate)
@@ -145,6 +148,28 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+	}
+
+	// Try as aircraft type code
+	typeExists, err := h.queries.TypeCodeExists(r.Context(), q)
+	if err != nil {
+		log.Printf("Error checking type code: %v", err)
+	} else if typeExists {
+		flights, total, err := h.queries.SearchByType(r.Context(), q, limit, offset)
+		if err != nil {
+			log.Printf("Error searching by type: %v", err)
+			jsonError(w, http.StatusInternalServerError, "search failed")
+			return
+		}
+		jsonResponse(w, http.StatusOK, searchResult{
+			Type:    "type",
+			Query:   q,
+			Total:   total,
+			Limit:   limit,
+			Offset:  offset,
+			Results: flights,
+		})
+		return
 	}
 
 	// Default: search as callsign
@@ -307,6 +332,77 @@ func hasDigit(s string) bool {
 	return false
 }
 
+// PeriodStats returns aggregated statistics for a given period.
+// Query params: period (day|week|month|year), date (YYYY-MM-DD, defaults to newest).
+func (h *Handler) PeriodStats(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	period := strings.ToLower(strings.TrimSpace(q.Get("period")))
+	if period == "" {
+		period = "week"
+	}
+	if period != "day" && period != "week" && period != "month" && period != "year" {
+		jsonError(w, http.StatusBadRequest, "period must be day, week, month, or year")
+		return
+	}
+
+	var refDate time.Time
+	dateStr := strings.TrimSpace(q.Get("date"))
+	if dateStr != "" {
+		d, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			jsonError(w, http.StatusBadRequest, "invalid date format, use YYYY-MM-DD")
+			return
+		}
+		refDate = d
+	} else {
+		// Default to newest processed date
+		stats, err := h.queries.GetStats(r.Context())
+		if err != nil || stats.NewestDate == nil {
+			jsonError(w, http.StatusInternalServerError, "failed to determine latest date")
+			return
+		}
+		refDate = *stats.NewestDate
+	}
+
+	// Compute period boundaries
+	var startDate, endDate time.Time
+	switch period {
+	case "day":
+		startDate = refDate
+		endDate = refDate
+	case "week":
+		// Monday-based week
+		wd := int(refDate.Weekday())
+		if wd == 0 {
+			wd = 7 // Sunday
+		}
+		startDate = refDate.AddDate(0, 0, -(wd - 1))
+		endDate = startDate.AddDate(0, 0, 6)
+	case "month":
+		startDate = time.Date(refDate.Year(), refDate.Month(), 1, 0, 0, 0, 0, time.UTC)
+		endDate = startDate.AddDate(0, 1, -1)
+	case "year":
+		startDate = time.Date(refDate.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+		endDate = time.Date(refDate.Year(), 12, 31, 0, 0, 0, 0, time.UTC)
+	}
+
+	seriesGroupBy := "day"
+	if period == "year" {
+		seriesGroupBy = "month"
+	}
+
+	ps, err := h.queries.GetPeriodStats(r.Context(), startDate, endDate, seriesGroupBy)
+	if err != nil {
+		log.Printf("Error getting period stats: %v", err)
+		jsonError(w, http.StatusInternalServerError, "failed to get period stats")
+		return
+	}
+	ps.Period = period
+
+	jsonResponse(w, http.StatusOK, ps)
+}
+
 // AdvancedSearch handles precise search with combinable filters.
 // Query params: icao, callsign, date (YYYY-MM-DD), date_from, date_to, limit, offset.
 // Rules:
@@ -317,13 +413,14 @@ func (h *Handler) AdvancedSearch(w http.ResponseWriter, r *http.Request) {
 
 	icao := strings.ToUpper(strings.TrimSpace(q.Get("icao")))
 	callsign := strings.ToUpper(strings.TrimSpace(q.Get("callsign")))
+	typeCode := strings.ToUpper(strings.TrimSpace(q.Get("type_code")))
 	dateStr := strings.TrimSpace(q.Get("date"))
 	dateFromStr := strings.TrimSpace(q.Get("date_from"))
 	dateToStr := strings.TrimSpace(q.Get("date_to"))
 
 	// Must have at least one filter
-	if icao == "" && callsign == "" && dateStr == "" && dateFromStr == "" && dateToStr == "" {
-		jsonError(w, http.StatusBadRequest, "at least one filter is required (icao, callsign, date, date_from/date_to)")
+	if icao == "" && callsign == "" && typeCode == "" && dateStr == "" && dateFromStr == "" && dateToStr == "" {
+		jsonError(w, http.StatusBadRequest, "at least one filter is required (icao, callsign, type_code, date, date_from/date_to)")
 		return
 	}
 
@@ -360,10 +457,10 @@ func (h *Handler) AdvancedSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If any date filter is set, require icao or callsign too
+	// If any date filter is set, require icao, callsign, or type_code too
 	hasDate := date != nil || dateFrom != nil || dateTo != nil
-	if hasDate && icao == "" && callsign == "" {
-		jsonError(w, http.StatusBadRequest, "date filters require 'icao' or 'callsign' to be specified")
+	if hasDate && icao == "" && callsign == "" && typeCode == "" {
+		jsonError(w, http.StatusBadRequest, "date filters require 'icao', 'callsign', or 'type_code' to be specified")
 		return
 	}
 
@@ -390,6 +487,7 @@ func (h *Handler) AdvancedSearch(w http.ResponseWriter, r *http.Request) {
 	filter := db.AdvancedFilter{
 		ICAO:     icao,
 		Callsign: callsign,
+		TypeCode: typeCode,
 		Date:     date,
 		DateFrom: dateFrom,
 		DateTo:   dateTo,
@@ -417,6 +515,9 @@ func (h *Handler) AdvancedSearch(w http.ResponseWriter, r *http.Request) {
 	if callsign != "" {
 		filters["callsign"] = callsign
 	}
+	if typeCode != "" {
+		filters["type_code"] = typeCode
+	}
 	if date != nil {
 		filters["date"] = date.Format("2006-01-02")
 	}
@@ -436,6 +537,22 @@ func (h *Handler) AdvancedSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, result)
+}
+
+// AircraftTypes returns all aircraft types with aircraft counts.
+func (h *Handler) AircraftTypes(w http.ResponseWriter, r *http.Request) {
+	types, err := h.queries.GetAircraftTypes(r.Context())
+	if err != nil {
+		log.Printf("Error getting aircraft types: %v", err)
+		jsonError(w, http.StatusInternalServerError, "failed to get aircraft types")
+		return
+	}
+	if types == nil {
+		types = []models.AircraftType{}
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"types": types,
+	})
 }
 
 // FailedDates returns all dates that permanently failed processing.

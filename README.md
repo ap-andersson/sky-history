@@ -206,13 +206,14 @@ All endpoints return JSON and are accessible under `/api/`.
 
 | Method | Path                    | Parameters                                                             | Description                          |
 |--------|-------------------------|------------------------------------------------------------------------|--------------------------------------|
-| GET    | `/api/search`           | `q` (required), `limit`, `offset`                                      | Quick search by ICAO, callsign, or registration (case-insensitive) |
-| GET    | `/api/search/advanced`  | `icao`, `callsign`, `date`, `date_from`, `date_to`, `limit`, `offset`  | Advanced search with combinable filters |
+| GET    | `/api/search`           | `q` (required), `limit`, `offset`                                      | Quick search by ICAO, callsign, registration, or aircraft type (case-insensitive) |
+| GET    | `/api/search/advanced`  | `icao`, `callsign`, `type_code`, `date`, `date_from`, `date_to`, `limit`, `offset`  | Advanced search with combinable filters |
 
 ### Aircraft & Flights
 
 | Method | Path                             | Parameters       | Description                                      |
 |--------|----------------------------------|------------------|--------------------------------------------------|
+| GET    | `/api/aircraft-types`            | —                | All aircraft types with aircraft counts            |
 | GET    | `/api/aircraft/{icao}`           | —                | Aircraft details by ICAO hex code                 |
 | GET    | `/api/aircraft/{icao}/flights`   | `date`, `limit`, `offset` | Flights for an aircraft (optionally filtered by date) |
 | GET    | `/api/flights/date/{date}`       | `limit`, `offset`| All flights on a specific date (YYYY-MM-DD)       |
@@ -223,9 +224,10 @@ All endpoints return JSON and are accessible under `/api/`.
 
 ## Database Schema
 
-Four tables are created automatically on startup:
+Five tables are created automatically on startup:
 
-- **`aircraft`** — ICAO (primary key), registration, type code, description
+- **`aircraft`** — ICAO (primary key), registration, type code, description, aircraft_type_id FK
+- **`aircraft_types`** — Lookup table of unique aircraft types (type code + description)
 - **`flights`** — ICAO, callsign, date, first/last seen timestamps (unique on icao+callsign+date+first_seen)
 - **`processed_releases`** — Tracks which GitHub release tags have been processed
 - **`failed_releases`** — Tracks releases that failed processing (with attempt count and permanent flag)
