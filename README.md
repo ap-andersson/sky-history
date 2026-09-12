@@ -65,7 +65,20 @@ docker compose up -d
 
 The frontend will be available at `http://localhost:8080` (or whatever `FRONTEND_PORT` is set to).
 
-### 3. Check status
+### 3. Apply the search indexes
+
+The base schema is created automatically, but the search indexes are not. Once
+the processor has ingested some data, run:
+
+```bash
+docker exec -i skyhistory-db psql -U skyhistory -d skyhistory < db/maintenance/001_search_indexes.sql
+```
+
+Skipping this leaves free-text search doing a full table scan — seconds per
+query once you have a few million flights. See
+[Database Performance](#database-performance).
+
+### 4. Check status
 
 ```bash
 # View logs
@@ -90,6 +103,27 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     container_name: skyhistory-db
+    # Tuning for a multi-GB flights table. See "Database Performance" below.
+    # Without these, PostgreSQL runs with a 128MB cache and assumes spinning
+    # disks, which makes it prefer sequential scans over the search indexes.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - effective_cache_size=6GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+    # Parallel query workers allocate dynamic shared memory in /dev/shm, which
+    # Docker caps at 64MB by default. Too small and queries fail with
+    # "could not resize shared memory segment".
+    shm_size: 1gb
     environment:
       POSTGRES_DB: skyhistory
       POSTGRES_USER: skyhistory
@@ -232,6 +266,88 @@ Five tables are created automatically on startup:
 - **`processed_releases`** — Tracks which GitHub release tags have been processed
 - **`failed_releases`** — Tracks releases that failed processing (with attempt count and permanent flag)
 
+Migrations in `processor/db/migrations/` run automatically on processor startup
+and are tracked in a `schema_migrations` table. Index changes that require
+`CREATE INDEX CONCURRENTLY` live in `db/maintenance/` and are applied manually —
+see [Database Performance](#database-performance).
+
+---
+
+## Database Performance
+
+The `flights` table grows by roughly 130,000 rows per day (~4M/month). At 35M
+rows it is about 2.3GB of heap plus several GB of indexes, which is past the
+point where default PostgreSQL settings and a missing index stop being
+survivable. Free-text search went from **8.3 seconds to 13 milliseconds** once
+the issues below were addressed.
+
+### Required indexes
+
+`processor/db/migrations/` creates the base schema, but the search indexes are
+**not** applied automatically. Run them once, manually:
+
+```bash
+psql -h <db-host> -U skyhistory -d skyhistory -f db/maintenance/001_search_indexes.sql
+```
+
+Or against a Compose deployment:
+
+```bash
+docker exec -i skyhistory-db psql -U skyhistory -d skyhistory < db/maintenance/001_search_indexes.sql
+```
+
+These live in `db/maintenance/` rather than `processor/db/migrations/` on
+purpose. The migration runner wraps each file in a transaction, and
+`CREATE INDEX CONCURRENTLY` cannot run inside one. `CONCURRENTLY` matters here:
+a plain `CREATE INDEX` on a 35M-row table blocks the processor's writes for
+several minutes, while the concurrent build lets ingest continue.
+
+The script is idempotent (`IF NOT EXISTS`) and safe to re-run.
+
+### Why queries must avoid `UPPER()` and `ILIKE`
+
+Neither can be served by a B-tree index, so any query using them scans the
+entire table. Both are also unnecessary here: the processor stores `icao`,
+`callsign` and `type_code` already uppercased and trimmed, and every API
+handler uppercases its input before querying. **Keep it that way** — adding
+`UPPER(column)` or `ILIKE` to a query on `flights` silently reintroduces a full
+table scan.
+
+Prefix search needs `LIKE` *and* the `text_pattern_ops` index. The database
+collation is `en_US.utf8`, under which a plain B-tree index cannot serve
+`LIKE 'X%'` at all — only a `text_pattern_ops` index makes the prefix range
+scannable.
+
+### Autovacuum and statistics
+
+At PostgreSQL's default 10% scale factor, a 35M-row table is only analyzed
+every ~26 days, and that interval grows with the table. Stale statistics make
+the planner mis-estimate row counts and choose bad plans. The maintenance
+script lowers this for `flights`:
+
+```sql
+ALTER TABLE flights SET (
+    autovacuum_analyze_scale_factor = 0.01,   -- ~every 350k rows, ~2.5 days
+    autovacuum_vacuum_scale_factor  = 0.02
+);
+```
+
+### Memory settings
+
+The `command:` block in the Compose example above raises `shared_buffers` from
+the 128MB default to 2GB and sets `random_page_cost=1.1` for SSD storage. The
+latter matters as much as the former: at the default cost of 4, the planner
+assumes random I/O is expensive and may still choose a sequential scan even
+when a usable index exists. Size `shared_buffers` to roughly 25% of the memory
+actually available to the container, and `effective_cache_size` to 50-75%.
+
+### Known remaining cost
+
+Searching by aircraft type (e.g. `A320`) takes ~340ms, almost entirely the
+exact `COUNT(*)` over ~3.1M matching flights. Capping the count
+(`SELECT COUNT(*) FROM (SELECT 1 FROM ... LIMIT 1001) t`) reduces this to
+~4ms at the cost of showing "1000+" instead of an exact total.
+
 ---
 
 ## Local Development
@@ -268,6 +384,12 @@ export LISTEN_ADDR=":8081"
 go run .
 ```
 
+`DATABASE_URL` can point at a remote database, which is a convenient way to test
+API or frontend changes against real data without rebuilding images or touching
+the deployed stack. The API is read-only, so this is safe against production.
+Run `npm run dev` in `frontend/` alongside it and the Vite proxy picks up the
+local API automatically.
+
 ### Running the frontend locally
 
 ```bash
@@ -277,6 +399,58 @@ npm run dev
 ```
 
 The Vite dev server starts on `http://localhost:5173` and proxies `/api/*` to the API service.
+
+---
+
+## Versioning and Releases
+
+This project follows [Semantic Versioning](https://semver.org/). Changes are
+recorded in [CHANGELOG.md](CHANGELOG.md).
+
+### Image tags
+
+Images are published to `ghcr.io/ap-andersson/sky-history-{api,processor,frontend}`:
+
+| Tag        | Moves when                    | Use for                                       |
+|------------|-------------------------------|-----------------------------------------------|
+| `1.2.3`    | never (immutable)             | Pinning an exact version. Recommended for production. |
+| `1.2`      | a new 1.2.x patch is released | Automatic patch updates                        |
+| `1`        | a new 1.x release             | Automatic minor + patch updates                |
+| `latest`   | a new release is tagged       | Tracking stable releases                       |
+| `edge`     | every push to `main`          | Testing unreleased changes                     |
+| `<sha>`    | never (immutable)             | Pinning an exact commit                        |
+
+`latest` deliberately does **not** follow `main`. If you want the development
+branch, use `edge`.
+
+### Cutting a release
+
+1. Update `CHANGELOG.md`: move entries out of `[Unreleased]` into a new
+   `## [X.Y.Z] - YYYY-MM-DD` section, and add an **Upgrade notes** subsection if
+   operators need to do anything (such as running a new `db/maintenance/` script).
+2. Commit to `main`.
+3. Tag and push:
+
+   ```bash
+   git tag -a vX.Y.Z -m "Release vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+The tag push builds and publishes all three images with semver tags, moves
+`latest`, and creates a GitHub Release using that version's CHANGELOG section as
+the release notes. If no matching CHANGELOG entry exists, the workflow falls back
+to auto-generated notes.
+
+### Upgrading a deployment
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Check the release notes for a database maintenance script before upgrading —
+schema migrations in `processor/db/migrations/` apply automatically on processor
+startup, but anything in `db/maintenance/` must be run by hand.
 
 ---
 
