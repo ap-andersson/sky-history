@@ -24,7 +24,7 @@ func NewQueries(pool *pgxpool.Pool) *Queries {
 func (q *Queries) GetAircraft(ctx context.Context, icao string) (*models.Aircraft, error) {
 	row := q.pool.QueryRow(ctx, `
         SELECT icao, registration, type_code, description, updated_at
-        FROM aircraft WHERE UPPER(icao) = UPPER($1)
+        FROM aircraft WHERE icao = $1
     `, icao)
 
 	var a models.Aircraft
@@ -38,21 +38,38 @@ func (q *Queries) GetAircraft(ctx context.Context, icao string) (*models.Aircraf
 	return &a, nil
 }
 
-// SearchByCallsign finds flights matching a callsign pattern.
-// Supports exact match and prefix match (e.g. "RYR" matches "RYR1AB", "RYR25K").
+// SearchByCallsign finds flights matching a callsign.
+// An exact match is tried first, since that is the common case and is served
+// directly by idx_flights_callsign. Only when there is no exact match does it
+// fall back to a prefix search, so "RYR" still matches "RYR1AB", "RYR25K".
 func (q *Queries) SearchByCallsign(ctx context.Context, callsign string, limit, offset int) ([]models.FlightWithAircraft, int, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 50
 	}
 
-	pattern := callsign + "%"
+	results, total, err := q.searchCallsign(ctx, "f.callsign = $1", callsign, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	if total > 0 {
+		return results, total, nil
+	}
 
-	// Count total matches
+	// LIKE rather than ILIKE: callsigns are stored uppercase and the caller
+	// uppercases the query, and only LIKE can use the prefix index.
+	return q.searchCallsign(ctx, "f.callsign LIKE $1", callsign+"%", limit, offset)
+}
+
+// searchCallsign runs the callsign search for a single predicate on f.callsign.
+func (q *Queries) searchCallsign(ctx context.Context, cond, arg string, limit, offset int) ([]models.FlightWithAircraft, int, error) {
 	var total int
 	err := q.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM flights WHERE callsign ILIKE $1", pattern).Scan(&total)
+		"SELECT COUNT(*) FROM flights f WHERE "+cond, arg).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count callsign search: %w", err)
+	}
+	if total == 0 {
+		return nil, 0, nil
 	}
 
 	rows, err := q.pool.Query(ctx, `
@@ -60,10 +77,10 @@ func (q *Queries) SearchByCallsign(ctx context.Context, callsign string, limit, 
                COALESCE(a.registration, ''), COALESCE(a.type_code, ''), COALESCE(a.description, '')
         FROM flights f
         LEFT JOIN aircraft a ON a.icao = f.icao
-        WHERE f.callsign ILIKE $1
+        WHERE `+cond+`
         ORDER BY f.date DESC, f.first_seen DESC
         LIMIT $2 OFFSET $3
-    `, pattern, limit, offset)
+    `, arg, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("search flights by callsign: %w", err)
 	}
@@ -84,7 +101,7 @@ func (q *Queries) GetFlightsByICAO(ctx context.Context, icao string, limit, offs
 
 	var total int
 	err := q.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM flights WHERE UPPER(icao) = UPPER($1)", icao).Scan(&total)
+		"SELECT COUNT(*) FROM flights WHERE icao = $1", icao).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count flights by icao: %w", err)
 	}
@@ -92,7 +109,7 @@ func (q *Queries) GetFlightsByICAO(ctx context.Context, icao string, limit, offs
 	rows, err := q.pool.Query(ctx, `
         SELECT id, icao, callsign, date, first_seen, last_seen
         FROM flights
-        WHERE UPPER(icao) = UPPER($1)
+        WHERE icao = $1
         ORDER BY date DESC, first_seen DESC
         LIMIT $2 OFFSET $3
     `, icao, limit, offset)
@@ -151,7 +168,7 @@ func (q *Queries) SearchByRegistration(ctx context.Context, registration string,
 	// Find the aircraft ICAO by registration
 	var icao string
 	err := q.pool.QueryRow(ctx,
-		"SELECT icao FROM aircraft WHERE UPPER(registration) = UPPER($1)", registration).Scan(&icao)
+		"SELECT icao FROM aircraft WHERE registration = $1", registration).Scan(&icao)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, 0, nil
@@ -270,7 +287,7 @@ func (q *Queries) GetAircraftTypes(ctx context.Context) ([]models.AircraftType, 
 func (q *Queries) TypeCodeExists(ctx context.Context, typeCode string) (bool, error) {
 	var exists bool
 	err := q.pool.QueryRow(ctx,
-		"SELECT EXISTS(SELECT 1 FROM aircraft_types WHERE UPPER(type_code) = UPPER($1))",
+		"SELECT EXISTS(SELECT 1 FROM aircraft_types WHERE type_code = $1)",
 		typeCode).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check type code exists: %w", err)
@@ -286,7 +303,7 @@ func (q *Queries) SearchByType(ctx context.Context, typeCode string, limit, offs
 
 	var total int
 	err := q.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM flights f JOIN aircraft a ON a.icao = f.icao WHERE UPPER(a.type_code) = UPPER($1)",
+		"SELECT COUNT(*) FROM flights f JOIN aircraft a ON a.icao = f.icao WHERE a.type_code = $1",
 		typeCode).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count flights by type: %w", err)
@@ -297,7 +314,7 @@ func (q *Queries) SearchByType(ctx context.Context, typeCode string, limit, offs
 		       COALESCE(a.registration, ''), COALESCE(a.type_code, ''), COALESCE(a.description, '')
 		FROM flights f
 		JOIN aircraft a ON a.icao = f.icao
-		WHERE UPPER(a.type_code) = UPPER($1)
+		WHERE a.type_code = $1
 		ORDER BY f.date DESC, f.first_seen DESC
 		LIMIT $2 OFFSET $3
 	`, typeCode, limit, offset)
@@ -371,17 +388,17 @@ func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, o
 	needsAircraftJoin := false
 
 	if f.ICAO != "" {
-		conditions = append(conditions, fmt.Sprintf("UPPER(f.icao) = UPPER($%d)", argN))
+		conditions = append(conditions, fmt.Sprintf("f.icao = $%d", argN))
 		args = append(args, f.ICAO)
 		argN++
 	}
 	if f.Callsign != "" {
-		conditions = append(conditions, fmt.Sprintf("f.callsign ILIKE $%d", argN))
+		conditions = append(conditions, fmt.Sprintf("f.callsign LIKE $%d", argN))
 		args = append(args, f.Callsign+"%")
 		argN++
 	}
 	if f.TypeCode != "" {
-		conditions = append(conditions, fmt.Sprintf("UPPER(a.type_code) = UPPER($%d)", argN))
+		conditions = append(conditions, fmt.Sprintf("a.type_code = $%d", argN))
 		args = append(args, f.TypeCode)
 		argN++
 		needsAircraftJoin = true
