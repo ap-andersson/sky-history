@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sky-history/api/models"
+	"golang.org/x/sync/errgroup"
 )
 
 // Queries provides read-only database access for the API.
@@ -462,116 +463,147 @@ func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, o
 
 // GetPeriodStats returns aggregated statistics for a date range.
 // seriesGroupBy should be "day" or "month" to control time series granularity.
+//
+// The four independent aggregations run concurrently, so the wall-clock cost is
+// the slowest of them rather than their sum.
 func (q *Queries) GetPeriodStats(ctx context.Context, startDate, endDate time.Time, seriesGroupBy string) (*models.PeriodStats, error) {
 	ps := &models.PeriodStats{
 		StartDate: startDate.Format("2006-01-02"),
 		EndDate:   endDate.Format("2006-01-02"),
 	}
 
-	// Total flights and unique aircraft in period
-	err := q.pool.QueryRow(ctx, `
-		SELECT COUNT(*), COUNT(DISTINCT f.icao)
-		FROM flights f
-		WHERE f.date >= $1 AND f.date <= $2
-	`, startDate, endDate).Scan(&ps.TotalFlights, &ps.TotalAircraft)
-	if err != nil {
-		return nil, fmt.Errorf("period stats counts: %w", err)
-	}
+	g, gctx := errgroup.WithContext(ctx)
 
-	// Days processed in period
-	err = q.pool.QueryRow(ctx, `
-		SELECT COUNT(DISTINCT date)
-		FROM processed_releases
-		WHERE date >= $1 AND date <= $2
-	`, startDate, endDate).Scan(&ps.DaysProcessed)
-	if err != nil {
-		return nil, fmt.Errorf("period stats days processed: %w", err)
-	}
+	// Total flights, busiest day and the time series all come from a single
+	// grouped scan. Grouping by date returns one row per day -- a few hundred
+	// at most -- and everything else is derived from those in Go, which is far
+	// cheaper than scanning the same rows once per statistic.
+	g.Go(func() error {
+		return q.periodDailyCounts(gctx, ps, startDate, endDate, seriesGroupBy)
+	})
 
-	// Flights by aircraft type
-	typeRows, err := q.pool.Query(ctx, `
-		SELECT COALESCE(NULLIF(a.type_code, ''), 'Unknown') as tc,
-		       COALESCE(MAX(NULLIF(a.description, '')), '') as descr,
-		       COUNT(*) as cnt
-		FROM flights f
-		LEFT JOIN aircraft a ON a.icao = f.icao
-		WHERE f.date >= $1 AND f.date <= $2
-		GROUP BY tc
-		ORDER BY cnt DESC
-	`, startDate, endDate)
-	if err != nil {
-		return nil, fmt.Errorf("period stats flights by type: %w", err)
-	}
-	defer typeRows.Close()
-
-	for typeRows.Next() {
-		var t models.TypeFlightCount
-		if err := typeRows.Scan(&t.TypeCode, &t.Description, &t.FlightCount); err != nil {
-			return nil, fmt.Errorf("scan type flight count: %w", err)
+	// Unique aircraft in the period. Counting matching aircraft rows is much
+	// faster than COUNT(DISTINCT f.icao), which forces a sort over every
+	// flight row, and is exactly equivalent: flights.icao is a foreign key
+	// into aircraft, so the two describe the same set.
+	g.Go(func() error {
+		err := q.pool.QueryRow(gctx, `
+			SELECT COUNT(*)
+			FROM aircraft a
+			WHERE EXISTS (
+				SELECT 1 FROM flights f
+				WHERE f.icao = a.icao AND f.date >= $1 AND f.date <= $2
+			)
+		`, startDate, endDate).Scan(&ps.TotalAircraft)
+		if err != nil {
+			return fmt.Errorf("period stats unique aircraft: %w", err)
 		}
-		ps.FlightsByType = append(ps.FlightsByType, t)
-	}
-	if err := typeRows.Err(); err != nil {
-		return nil, err
-	}
+		return nil
+	})
 
-	// Busiest day in period
-	var busiestDay *string
-	err = q.pool.QueryRow(ctx, `
-		SELECT f.date::text
-		FROM flights f
-		WHERE f.date >= $1 AND f.date <= $2
-		GROUP BY f.date
-		ORDER BY COUNT(*) DESC
-		LIMIT 1
-	`, startDate, endDate).Scan(&busiestDay)
-	if err != nil && err != pgx.ErrNoRows {
-		return nil, fmt.Errorf("period stats busiest day: %w", err)
-	}
-	if busiestDay != nil {
-		ps.BusiestDay = *busiestDay
-		// Get flight count for busiest day
-		_ = q.pool.QueryRow(ctx, `
-			SELECT COUNT(*) FROM flights WHERE date = $1
-		`, ps.BusiestDay).Scan(&ps.BusiestDayFlights)
-	}
-
-	// Flight time series
-	var seriesSQL string
-	if seriesGroupBy == "month" {
-		seriesSQL = `
-			SELECT TO_CHAR(f.date, 'YYYY-MM') as label, COUNT(*) as cnt
-			FROM flights f
-			WHERE f.date >= $1 AND f.date <= $2
-			GROUP BY label
-			ORDER BY label
-		`
-	} else {
-		seriesSQL = `
-			SELECT f.date::text as label, COUNT(*) as cnt
-			FROM flights f
-			WHERE f.date >= $1 AND f.date <= $2
-			GROUP BY f.date
-			ORDER BY f.date
-		`
-	}
-
-	seriesRows, err := q.pool.Query(ctx, seriesSQL, startDate, endDate)
-	if err != nil {
-		return nil, fmt.Errorf("period stats flight series: %w", err)
-	}
-	defer seriesRows.Close()
-
-	for seriesRows.Next() {
-		var sp models.SeriesPoint
-		if err := seriesRows.Scan(&sp.Label, &sp.Count); err != nil {
-			return nil, fmt.Errorf("scan series point: %w", err)
+	g.Go(func() error {
+		err := q.pool.QueryRow(gctx, `
+			SELECT COUNT(DISTINCT date)
+			FROM processed_releases
+			WHERE date >= $1 AND date <= $2
+		`, startDate, endDate).Scan(&ps.DaysProcessed)
+		if err != nil {
+			return fmt.Errorf("period stats days processed: %w", err)
 		}
-		ps.FlightSeries = append(ps.FlightSeries, sp)
-	}
-	if err := seriesRows.Err(); err != nil {
+		return nil
+	})
+
+	g.Go(func() error {
+		return q.periodFlightsByType(gctx, ps, startDate, endDate)
+	})
+
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
 
 	return ps, nil
+}
+
+// periodDailyCounts fills in total flights, the busiest day and the time series
+// from one scan grouped by date.
+func (q *Queries) periodDailyCounts(ctx context.Context, ps *models.PeriodStats, startDate, endDate time.Time, seriesGroupBy string) error {
+	rows, err := q.pool.Query(ctx, `
+		SELECT f.date, COUNT(*)
+		FROM flights f
+		WHERE f.date >= $1 AND f.date <= $2
+		GROUP BY f.date
+		ORDER BY f.date
+	`, startDate, endDate)
+	if err != nil {
+		return fmt.Errorf("period stats daily counts: %w", err)
+	}
+	defer rows.Close()
+
+	byMonth := seriesGroupBy == "month"
+	for rows.Next() {
+		var day time.Time
+		var count int
+		if err := rows.Scan(&day, &count); err != nil {
+			return fmt.Errorf("scan daily count: %w", err)
+		}
+
+		ps.TotalFlights += count
+
+		if count > ps.BusiestDayFlights {
+			ps.BusiestDayFlights = count
+			ps.BusiestDay = day.Format("2006-01-02")
+		}
+
+		// Rows arrive in date order, so appending keeps the series sorted and
+		// a month only ever needs adding to the last point.
+		if byMonth {
+			label := day.Format("2006-01")
+			if n := len(ps.FlightSeries); n > 0 && ps.FlightSeries[n-1].Label == label {
+				ps.FlightSeries[n-1].Count += count
+				continue
+			}
+			ps.FlightSeries = append(ps.FlightSeries, models.SeriesPoint{Label: label, Count: count})
+			continue
+		}
+		ps.FlightSeries = append(ps.FlightSeries, models.SeriesPoint{
+			Label: day.Format("2006-01-02"),
+			Count: count,
+		})
+	}
+	return rows.Err()
+}
+
+// periodFlightsByType fills in the per-type flight breakdown.
+func (q *Queries) periodFlightsByType(ctx context.Context, ps *models.PeriodStats, startDate, endDate time.Time) error {
+	// Collapsing flights to one row per aircraft before joining keeps the join
+	// at ~300k rows instead of one row per flight.
+	rows, err := q.pool.Query(ctx, `
+		SELECT COALESCE(NULLIF(a.type_code, ''), 'Unknown') AS tc,
+		       COALESCE(MAX(NULLIF(a.description, '')), '') AS descr,
+		       SUM(f.c)::bigint AS cnt
+		FROM (
+			SELECT icao, COUNT(*) AS c
+			FROM flights
+			WHERE date >= $1 AND date <= $2
+			GROUP BY icao
+		) f
+		LEFT JOIN aircraft a ON a.icao = f.icao
+		GROUP BY tc
+		ORDER BY cnt DESC
+	`, startDate, endDate)
+	if err != nil {
+		return fmt.Errorf("period stats flights by type: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var t models.TypeFlightCount
+		var cnt int64
+		if err := rows.Scan(&t.TypeCode, &t.Description, &cnt); err != nil {
+			return fmt.Errorf("scan type flight count: %w", err)
+		}
+		t.FlightCount = int(cnt)
+		ps.FlightsByType = append(ps.FlightsByType, t)
+	}
+	return rows.Err()
 }

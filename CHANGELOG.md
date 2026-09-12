@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Statistics page aggregation is substantially faster; the yearly view went
+  from ~13.3s to ~3.6s. No API response changes -- output was verified
+  identical across all four periods, including all 1527 per-type counts.
+  - Unique aircraft is counted by probing the `aircraft` table with `EXISTS`
+    rather than `COUNT(DISTINCT f.icao)`, which forces a sort over every
+    flight row in the period (4085ms to 484ms). The two are equivalent because
+    `flights.icao` is a foreign key into `aircraft`.
+  - Total flights, the busiest day and the time series now come from a single
+    scan grouped by date, returning a few hundred rows that are aggregated in
+    Go, instead of four separate scans of the same rows (5610ms to 1205ms).
+    This also removes a `TO_CHAR` grouping that defeated cheaper plans.
+  - The per-type breakdown collapses flights to one row per aircraft before
+    joining, keeping the join at ~300k rows rather than one row per flight.
+  - The four independent aggregations run concurrently, so the wall-clock cost
+    is the slowest rather than their sum.
+- Fixed the busiest-day flight count silently reporting 0 on query failure; its
+  error was previously discarded.
+
 ## [1.1.0] - 2026-09-12
 
 Search performance release. Free-text search went from ~8.3 seconds to ~13
