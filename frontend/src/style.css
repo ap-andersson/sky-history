@@ -699,19 +699,21 @@ tr:hover td {
   flex-wrap: wrap;
   gap: 0.25rem;
   background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 0.35rem;
+  padding: 0.4rem;
   margin-bottom: 1.5rem;
 }
 
+/* Sized to the same scale as inputs and buttons: 1rem text on 0.6rem padding. */
 .nav-btn {
   background: none;
   border: none;
   border-radius: 4px;
   color: var(--text-dim);
-  font-size: 0.9rem;
+  font-size: 1rem;
   font-family: inherit;
-  padding: 0.45rem 0.9rem;
+  padding: 0.6rem 1.1rem;
   cursor: pointer;
 }
 
