@@ -305,10 +305,16 @@ func (q *Queries) SearchByType(ctx context.Context, typeCode string, limit, offs
 		limit = 50
 	}
 
+	// Matched on the type stored on the flight rather than by joining to
+	// aircraft. The planner cannot estimate how many flights a type has when
+	// the correlation spans two tables, and for a rare type it would scan the
+	// whole date index hunting for matches. Against the column, one index
+	// answers this in sort order and LIMIT stops as soon as it has enough.
 	var total int
-	err := q.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM flights f JOIN aircraft a ON a.icao = f.icao WHERE a.type_code = $1",
-		typeCode).Scan(&total)
+	err := q.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM flights
+		WHERE aircraft_type_id = (SELECT id FROM aircraft_types WHERE type_code = $1)
+	`, typeCode).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count flights by type: %w", err)
 	}
@@ -317,8 +323,8 @@ func (q *Queries) SearchByType(ctx context.Context, typeCode string, limit, offs
 		SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen,
 		       COALESCE(a.registration, ''), COALESCE(a.type_code, ''), COALESCE(a.description, '')
 		FROM flights f
-		JOIN aircraft a ON a.icao = f.icao
-		WHERE a.type_code = $1
+		LEFT JOIN aircraft a ON a.icao = f.icao
+		WHERE f.aircraft_type_id = (SELECT id FROM aircraft_types WHERE type_code = $1)
 		ORDER BY f.date DESC, f.first_seen DESC
 		LIMIT $2 OFFSET $3
 	`, typeCode, limit, offset)
@@ -388,9 +394,6 @@ func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, o
 	var args []interface{}
 	argN := 1
 
-	// Track whether we need the aircraft JOIN in the count query
-	needsAircraftJoin := false
-
 	if f.ICAO != "" {
 		conditions = append(conditions, fmt.Sprintf("f.icao = $%d", argN))
 		args = append(args, f.ICAO)
@@ -402,10 +405,10 @@ func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, o
 		argN++
 	}
 	if f.TypeCode != "" {
-		conditions = append(conditions, fmt.Sprintf("a.type_code = $%d", argN))
+		conditions = append(conditions, fmt.Sprintf(
+			"f.aircraft_type_id = (SELECT id FROM aircraft_types WHERE type_code = $%d)", argN))
 		args = append(args, f.TypeCode)
 		argN++
-		needsAircraftJoin = true
 	}
 	if f.Date != nil {
 		conditions = append(conditions, fmt.Sprintf("f.date = $%d", argN))
@@ -425,15 +428,10 @@ func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, o
 
 	where := strings.Join(conditions, " AND ")
 
-	// Count — include aircraft JOIN when filtering by type
+	// Every filter now lives on flights, so the count never needs the join.
 	var total int
-	var countSQL string
-	if needsAircraftJoin {
-		countSQL = "SELECT COUNT(*) FROM flights f JOIN aircraft a ON a.icao = f.icao WHERE " + where
-	} else {
-		countSQL = "SELECT COUNT(*) FROM flights f WHERE " + where
-	}
-	err := q.pool.QueryRow(ctx, countSQL, args...).Scan(&total)
+	err := q.pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM flights f WHERE "+where, args...).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("advanced search count: %w", err)
 	}

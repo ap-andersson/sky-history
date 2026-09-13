@@ -286,7 +286,7 @@ Five tables are created automatically on startup:
 
 - **`aircraft`** — ICAO (primary key), registration, type code, description, aircraft_type_id FK
 - **`aircraft_types`** — Lookup table of unique aircraft types (type code + description)
-- **`flights`** — ICAO, callsign, date, first/last seen timestamps (unique on icao+callsign+date+first_seen)
+- **`flights`** — ICAO, callsign, date, first/last seen timestamps, aircraft_type_id (unique on icao+callsign+date+first_seen)
 - **`processed_releases`** — Tracks which GitHub release tags have been processed
 - **`failed_releases`** — Tracks releases that failed processing (with attempt count and permanent flag)
 
@@ -404,6 +404,53 @@ rows and is safe to re-run.
 Note that aircraft type codes are corrected over time by the processor, and the
 incremental refresh does not retroactively reattribute historical flights. Re-run
 the backfill script if you want the breakdowns rebuilt from current type data.
+
+### Aircraft type on the flight row
+
+`flights.aircraft_type_id` duplicates the type from the `aircraft` table. The
+duplication is deliberate.
+
+Searching "all flights of type X, most recent first" was answered by joining
+`flights` to `aircraft` and ordering by date. PostgreSQL cannot estimate how
+many flights a type has, because the correlation spans two tables, so it walked
+the date index looking for matches and stopping at 50. That works well for a
+common type and catastrophically for a rare one: searching `SB39`, with 133
+flights, took **5.5 seconds**, while `A320`, with 3.1 million, took 76ms.
+
+With the type on the row, `idx_flights_type_date (aircraft_type_id, date DESC,
+first_seen DESC)` answers the query directly in sort order and `LIMIT` stops as
+soon as it has enough rows. Every type now costs the same:
+
+| Type | Flights   | Before  | After |
+|------|-----------|---------|-------|
+| SB39 | 133       | 5,540ms | 11ms  |
+| A306 | 58,266    | 280ms   | 14ms  |
+| A320 | 3,109,890 | 510ms   | 237ms |
+
+(`A320` is now dominated by its exact `COUNT(*)`, not by fetching rows.)
+
+The processor sets the column at insert, reading it back from the `aircraft`
+row it wrote earlier in the same transaction, so the two cannot disagree.
+
+**When an aircraft's type changes, history is left alone.** Only flights with no
+type at all are filled in, by `FillInMissingTypes` on each release. An ICAO hex
+that was a helicopter last year and a business jet today should not have last
+year's flights retroactively become business jet flights — the same hex gets
+reassigned to new airframes over time. A NULL makes no claim about the airframe,
+so filling it in loses nothing; overwriting an existing type would discard what
+was actually observed.
+
+To populate the column for existing data:
+
+```bash
+psql -h <db-host> -U skyhistory -d skyhistory -f db/maintenance/003_backfill_flight_type.sql
+```
+
+Budget a couple of hours on a 35M-row table: every row is rewritten, and each
+rewrite updates every index on `flights`. The script works one month at a time
+with a vacuum between, so bloat stays bounded and the processor keeps running
+throughout. Expect the database to grow during the process; a
+`REINDEX TABLE CONCURRENTLY flights` afterwards reclaims the churn.
 
 ### Known remaining cost
 

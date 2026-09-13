@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-13
+
+Searching by aircraft type no longer depends on how common the type is.
+
+### Added
+
+- `flights.aircraft_type_id`, with `idx_flights_type_date
+  (aircraft_type_id, date DESC, first_seen DESC)`, so a search by type is
+  answered by one index already in sort order.
+- `db/maintenance/003_backfill_flight_type.sql` to populate the column for
+  existing rows, and to create the supporting indexes.
+- The processor fills in the type for flights that were recorded before their
+  aircraft had been identified, on each release.
+
+### Changed
+
+- Searching by aircraft type no longer joins `flights` to `aircraft`.
+  PostgreSQL cannot estimate how many flights a type has when the correlation
+  spans two tables, so it walked the date index hunting for matches — fine for
+  a common type, catastrophic for a rare one. Results are unchanged, verified
+  against the previous implementation across eight types on both search
+  endpoints.
+
+  | Type | Flights   | Before  | After |
+  |------|-----------|---------|-------|
+  | SB39 | 133       | 5,540ms | 9ms   |
+  | B742 | 819       | 1,580ms | 8ms   |
+  | A306 | 58,266    | 280ms   | 13ms  |
+  | A320 | 3,109,890 | 510ms   | 258ms |
+
+  Fetching rows now costs ~14ms for every type; `A320` and `B738` are dominated
+  by their exact `COUNT(*)`, not by the search.
+
+- When an aircraft's type changes, its earlier flights keep the type recorded at
+  the time; only flights with no type at all are filled in later. An ICAO hex
+  can be reassigned to a different airframe, and last year's flights should not
+  retroactively become the new aircraft's type.
+
+### Upgrade notes
+
+**Run `db/maintenance/003_backfill_flight_type.sql` after upgrading.** Until it
+has run, `flights.aircraft_type_id` is NULL for every existing row and searching
+by aircraft type returns **no results** rather than an error. Migration 005 only
+adds the column; the processor fills it in for new flights from then on.
+
+Budget a couple of hours on a 35M-row table. Every row is rewritten and each
+rewrite updates every index on `flights`, so the table and its indexes grow
+substantially during the process — roughly 10GB from 7GB in our case. The script
+works one month at a time with a vacuum between, which keeps the peak bounded
+and lets the processor keep running throughout. Afterwards,
+`REINDEX TABLE CONCURRENTLY flights` reclaims the churn; it took under three
+minutes and returned more space than the backfill consumed.
+
+If PostgreSQL runs in Docker, make sure the container has `shm_size: 1gb` (see
+the Compose example). With the default 64MB, parallel maintenance operations
+fail with `could not resize shared memory segment ... No space left on device`.
+
 ## [1.2.0] - 2026-09-13
 
 Statistics are now pre-aggregated instead of computed per request, and the UI
@@ -139,6 +196,7 @@ Initial state of the project prior to versioned releases: processor, API,
 frontend and PostgreSQL schema, deployed via Docker Compose with images built
 from `main`. Never formally tagged; recorded here for continuity.
 
-[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.3.0
 [1.2.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.2.0
 [1.1.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.1.0

@@ -228,6 +228,15 @@ func (p *Processor) processRelease(ctx context.Context, release github.ReleaseIn
 		return
 	}
 
+	// Aircraft identified since their earlier flights were recorded: give those
+	// flights the type now known, so a search finds them.
+	if filled, err := p.flightRepo.FillInMissingTypes(ctx, tx); err != nil {
+		log.Printf("Error filling in flight types for %s: %v", release.Tag, err)
+		return
+	} else if filled > 0 {
+		log.Printf("  Filled in aircraft type for %d earlier flight(s)", filled)
+	}
+
 	// Inside the same transaction, so the rollups can never disagree with the
 	// flights they summarise. Costs a few seconds against a job that takes
 	// minutes, and recomputes from flights so a reprocess stays correct.
