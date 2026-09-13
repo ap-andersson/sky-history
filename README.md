@@ -266,6 +266,13 @@ Five tables are created automatically on startup:
 - **`processed_releases`** — Tracks which GitHub release tags have been processed
 - **`failed_releases`** — Tracks releases that failed processing (with attempt count and permanent flag)
 
+Three further tables hold pre-aggregated statistics, maintained by the processor
+after each successful release (see [Statistics rollups](#statistics-rollups)):
+
+- **`daily_stats`** — one row per day: flight count and distinct aircraft count
+- **`daily_type_stats`** — one row per day per aircraft type: flight count and description
+- **`period_aircraft`** — distinct aircraft per day/week/month/year
+
 Migrations in `processor/db/migrations/` run automatically on processor startup
 and are tracked in a `schema_migrations` table. Index changes that require
 `CREATE INDEX CONCURRENTLY` live in `db/maintenance/` and are applied manually —
@@ -340,6 +347,39 @@ latter matters as much as the former: at the default cost of 4, the planner
 assumes random I/O is expensive and may still choose a sequential scan even
 when a usable index exists. Size `shared_buffers` to roughly 25% of the memory
 actually available to the container, and `effective_cache_size` to 50-75%.
+
+### Statistics rollups
+
+The statistics page used to aggregate over the whole `flights` table on every
+request, which took ~13s for a full year and grew with the data. It now reads
+three rollup tables instead, and responds in well under 100ms regardless of
+period length.
+
+The processor refreshes the rollups for the affected date inside the same
+transaction that inserts the flights (`processor/db/stats.go`), so they can
+never disagree with the data they summarise. Everything is recomputed **from
+the `flights` table** rather than accumulated from parse counters, which makes
+reprocessing a release idempotent. This adds ~2.6s to a release that already
+takes minutes.
+
+Distinct aircraft is the one figure that cannot be summed from daily rows — an
+aircraft flying on 100 days counts once for the year — so `period_aircraft`
+holds it per period. Only the four period types the API exposes are maintained,
+and a release only touches the four periods containing its date.
+
+To populate the tables for existing data, or to rebuild them at any time:
+
+```bash
+psql -h <db-host> -U skyhistory -d skyhistory -f db/maintenance/002_backfill_stats_rollups.sql
+```
+
+**No reprocessing of releases is required** — every figure is derived from
+`flights`, which is already populated. The backfill takes about a minute on 35M
+rows and is safe to re-run.
+
+Note that aircraft type codes are corrected over time by the processor, and the
+incremental refresh does not retroactively reattribute historical flights. Re-run
+the backfill script if you want the breakdowns rebuilt from current type data.
 
 ### Known remaining cost
 

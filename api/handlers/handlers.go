@@ -357,12 +357,12 @@ func (h *Handler) PeriodStats(w http.ResponseWriter, r *http.Request) {
 		refDate = d
 	} else {
 		// Default to newest processed date
-		stats, err := h.queries.GetStats(r.Context())
-		if err != nil || stats.NewestDate == nil {
+		newest, err := h.queries.GetNewestProcessedDate(r.Context())
+		if err != nil || newest == nil {
 			jsonError(w, http.StatusInternalServerError, "failed to determine latest date")
 			return
 		}
-		refDate = *stats.NewestDate
+		refDate = *newest
 	}
 
 	// Compute period boundaries
@@ -392,7 +392,7 @@ func (h *Handler) PeriodStats(w http.ResponseWriter, r *http.Request) {
 		seriesGroupBy = "month"
 	}
 
-	ps, err := h.queries.GetPeriodStats(r.Context(), startDate, endDate, seriesGroupBy)
+	ps, err := h.queries.GetPeriodStats(r.Context(), period, startDate, endDate, seriesGroupBy)
 	if err != nil {
 		log.Printf("Error getting period stats: %v", err)
 		jsonError(w, http.StatusInternalServerError, "failed to get period stats")
