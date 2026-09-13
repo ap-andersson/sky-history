@@ -440,7 +440,6 @@ export function App() {
 
       <Nav
         current={view.kind}
-        failedCount={failedDates.length}
         onStart={goHome}
         onData={goData}
         onStats={() => goStats()}
@@ -624,14 +623,12 @@ const NAV_ITEMS: { key: NavKey; label: string }[] = [
 
 function Nav({
   current,
-  failedCount,
   onStart,
   onData,
   onStats,
   onSettings,
 }: {
   current: View["kind"];
-  failedCount: number;
   onStart: () => void;
   onData: () => void;
   onStats: () => void;
@@ -659,11 +656,6 @@ function Nav({
           onClick={handlers[item.key]}
         >
           {item.label}
-          {item.key === "data" && failedCount > 0 && (
-            <span class="nav-badge" title={`${failedCount} date(s) failed processing`}>
-              {failedCount}
-            </span>
-          )}
         </button>
       ))}
     </nav>

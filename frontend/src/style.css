@@ -691,52 +691,44 @@ tr:hover td {
 
 /* ---- Main navigation ---- */
 
+/* Same panel treatment the processing-stats bar used to have, reused as the
+   menu. Bottom margin matches the header's, so the menu sits evenly between
+   the title and the content. */
 .main-nav {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.25rem;
-  margin-bottom: 1rem;
-  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 6px;
+  padding: 0.35rem;
+  margin-bottom: 1.5rem;
 }
 
 .nav-btn {
-  position: relative;
   background: none;
   border: none;
-  border-bottom: 2px solid transparent;
+  border-radius: 4px;
   color: var(--text-dim);
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   font-family: inherit;
-  padding: 0.6rem 0.9rem;
+  padding: 0.45rem 0.9rem;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
 }
 
 .nav-btn:hover {
   color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .nav-btn.active {
-  color: var(--text);
-  border-bottom-color: var(--accent);
+  color: var(--accent);
+  background: rgba(79, 143, 247, 0.14);
+  font-weight: 600;
 }
 
 .nav-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-}
-
-.nav-badge {
-  background: #f59e0b;
-  color: #1a1200;
-  border-radius: 999px;
-  font-size: 0.7rem;
-  font-weight: 700;
-  min-width: 1.15rem;
-  padding: 0 0.35rem;
-  line-height: 1.15rem;
-  text-align: center;
 }
 
 /* ---- Search mode toggle ---- */
