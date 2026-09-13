@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-13
+
+Statistics are now pre-aggregated instead of computed per request, and the UI
+gains a menu, a Data page and display settings.
+
 ### Added
 
 - Pre-aggregated statistics tables (`daily_stats`, `daily_type_stats`,
@@ -17,46 +22,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `db/maintenance/002_backfill_stats_rollups.sql` to populate the rollups from
   existing data, or rebuild them later. **No reprocessing of releases is
   required** — everything is derived from `flights`. Takes ~1 minute on 35M rows.
+- A main menu — Start, Data, Statistics, Settings — replacing the processing
+  stats bar that sat above every page next to a Statistics link.
+- A **Data** page carrying the figures from that bar, plus the releases that
+  failed to parse. Failures were previously behind a small warning button that
+  truncated each error to one line; they now show the release tag, attempt count
+  and the full message.
+- A **Settings** page, stored in the browser via `localStorage`:
+  - Time zone: UTC (default) or the browser's zone.
+  - Clock: 24-hour (default) or 12-hour.
+  - Date format: year-first ISO (default), day-first with slashes or dots, or
+    month-first.
 
 ### Changed
 
-- Statistics page aggregation is substantially faster; the yearly view went
-  from ~13.3s to ~3.6s. No API response changes -- output was verified
-  identical across all four periods, including all 1527 per-type counts.
-  - Unique aircraft is counted by probing the `aircraft` table with `EXISTS`
-    rather than `COUNT(DISTINCT f.icao)`, which forces a sort over every
-    flight row in the period (4085ms to 484ms). The two are equivalent because
-    `flights.icao` is a foreign key into `aircraft`.
-  - Total flights, the busiest day and the time series now come from a single
-    scan grouped by date, returning a few hundred rows that are aggregated in
-    Go, instead of four separate scans of the same rows (5610ms to 1205ms).
-    This also removes a `TO_CHAR` grouping that defeated cheaper plans.
-  - The per-type breakdown collapses flights to one row per aircraft before
-    joining, keeping the join at ~300k rows rather than one row per flight.
-  - The four independent aggregations run concurrently, so the wall-clock cost
-    is the slowest rather than their sum.
-- Fixed the busiest-day flight count silently reporting 0 on query failure; its
-  error was previously discarded.
-- The statistics endpoints now read the rollup tables rather than aggregating
-  over `flights`. Output is unchanged, verified field by field against the
-  previous implementation across all four periods including every per-type
+- The statistics endpoints read the rollup tables instead of aggregating over
+  `flights`, so cost is proportional to the length of the period rather than the
+  number of flights in it. Output is unchanged, verified field by field against
+  the previous implementation across all four periods, including every per-type
   count and description.
   - `/api/stats/period?period=year` 13.3s to 48ms; month 2.7s to 23ms;
     week 1.7s to 22ms; day 1.0s to 17ms.
   - `/api/stats` 670ms to 26ms. It was running `COUNT(*)` over all 35M flight
     rows on every page load; the total now comes from `daily_stats`, which sums
-    to exactly the same number.
-  - The period endpoint no longer computes the full stats summary just to find
-    the newest processed date.
-  - Per-type descriptions come from a per-day `MAX` stored in the rollup.
-    `MAX` decomposes over partitions, so the range aggregate reproduces exactly
+    to exactly the same number. The period endpoint was paying that cost too,
+    purely to look up the newest processed date.
+  - Unique aircraft per period is precomputed, being the one figure that cannot
+    be summed from daily rows: an aircraft flying on 100 days counts once for
+    the year.
+  - Per-type descriptions come from a per-day `MAX` stored in the rollup. `MAX`
+    decomposes over partitions, so aggregating across a range reproduces exactly
     what the previous join to `aircraft` produced.
+- Quick search and Filters are a toggle showing one at a time. The gear button
+  previously revealed the advanced panel below the still-visible quick search
+  box, which suggested the two combined; they are separate queries.
+- Search appears only where it applies — Start and the result views. Data,
+  Statistics and Settings no longer carry a search box unrelated to them.
+- Times and dates follow the Settings preferences throughout. The time zone
+  setting shifts instants only: a flight keeps the UTC day its release belongs
+  to, because that date is what search, paging and the aircraft detail URL are
+  keyed on. The zone is never printed in tables, only offered as a tooltip.
+- Failed releases stack into blocks below 640px, where four columns holding a
+  long identifier and a long error message were unreadable.
+
+### Fixed
+
+- The busiest-day flight count silently reported 0 when its query failed; the
+  error was discarded rather than surfaced.
 
 ### Upgrade notes
 
 Run `db/maintenance/002_backfill_stats_rollups.sql` after upgrading. Until it is
-run, the statistics endpoints will report zeroes: migration 004 creates the
-tables empty, and the processor only fills in dates it processes from then on.
+run, the statistics endpoints report zeroes: migration 004 creates the tables
+empty, and the processor only fills in dates it processes from then on.
+
+Upgrade the **processor** as well as the API, not just one. The API only reads
+the rollups, but the processor is what keeps them current — an older processor
+will write flights without updating the rollups, and the statistics for those
+days will quietly under-report until the backfill script is run again.
+
+Display settings are per-browser and need no migration; everything continues to
+be stored and queried in UTC.
 
 ## [1.1.0] - 2026-09-12
 
@@ -113,5 +139,6 @@ Initial state of the project prior to versioned releases: processor, API,
 frontend and PostgreSQL schema, deployed via Docker Compose with images built
 from `main`. Never formally tagged; recorded here for continuity.
 
-[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.2.0
 [1.1.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.1.0

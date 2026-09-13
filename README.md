@@ -33,7 +33,7 @@ GitHub Releases ──► Processor ──► PostgreSQL ◄── API ◄──
 3. Trace JSON files (gzip-compressed, one per aircraft) are parsed concurrently.
 4. Flight summaries (ICAO, callsign, date, first/last seen) are batch-inserted into PostgreSQL.
 5. **API** serves the data via RESTful endpoints.
-6. **Frontend** provides a dark-themed search UI with quick search, advanced multi-filter search, and per-aircraft date-scoped detail pages.
+6. **Frontend** provides a dark-themed UI with four sections: **Start** (quick search or multi-filter search, and per-aircraft date-scoped detail pages), **Data** (what has been processed, and any releases that failed to parse), **Statistics**, and **Settings**.
 
 ---
 
@@ -221,6 +221,30 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `KEEP_DOWNLOADS`   | `false`                              | Set to `true` to cache extracted files on disk (useful during development to avoid re-downloads). |
 | `ULTRAFEEDER_URLS` | *(empty)*                            | Comma-separated base URLs for tar1090/ultrafeeder instances. Adds "View Live" links in the UI.   |
 | `FRONTEND_PORT`    | `8080`                               | Host port the frontend is exposed on.                                                            |
+
+---
+
+## Display Settings
+
+The **Settings** page stores display preferences in the browser via
+`localStorage`. They are per-browser, require no server configuration, and are
+not synchronised between devices.
+
+| Setting     | Options                                                              | Default   |
+|-------------|----------------------------------------------------------------------|-----------|
+| Time zone   | UTC, or the browser's own zone                                        | UTC       |
+| Clock       | 24-hour, 12-hour                                                      | 24-hour   |
+| Date format | `2026-02-14`, `14/02/2026`, `14.02.2026`, `02/14/2026`                | ISO       |
+
+The time zone setting shifts **instants only** — the first and last time an
+aircraft was seen. A flight keeps the UTC day its release belongs to, because
+that date is what search, paging and the aircraft detail URL are keyed on, and
+shifting it would file a flight under a day that disagrees with the dataset it
+came from. The zone in use is shown as a tooltip on times rather than printed in
+tables.
+
+All of this is presentation. Times are stored and queried in UTC regardless of
+what is selected here.
 
 ---
 
