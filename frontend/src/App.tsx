@@ -1,5 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import {
+  DATE_FORMAT_OPTIONS,
+  getSettings,
+  loadSettings,
+  saveSettings,
+  timezoneTooltip,
+  type Settings,
+} from "./settings";
+import {
   search,
   advancedSearch,
   getStats,
@@ -23,7 +31,9 @@ type View =
   | { kind: "quickResults"; result: SearchResult }
   | { kind: "advancedResults"; result: AdvancedSearchResult }
   | { kind: "detail"; icao: string; date: string; aircraft: Aircraft | null; flights: FlightWithAircraft[]; links: ExternalLink[]; total: number; offset: number }
-  | { kind: "stats"; data: PeriodStats };
+  | { kind: "stats"; data: PeriodStats }
+  | { kind: "data" }
+  | { kind: "settings" };
 
 // Serializable route info for history state
 type Route =
@@ -31,7 +41,9 @@ type Route =
   | { kind: "search"; q: string; offset?: number }
   | { kind: "advanced"; icao?: string; callsign?: string; type_code?: string; date?: string; date_from?: string; date_to?: string; offset?: number }
   | { kind: "detail"; icao: string; date: string }
-  | { kind: "stats"; period?: string; date?: string };
+  | { kind: "stats"; period?: string; date?: string }
+  | { kind: "data" }
+  | { kind: "settings" };
 
 function routeToPath(route: Route): string {
   switch (route.kind) {
@@ -63,6 +75,10 @@ function routeToPath(route: Route): string {
       const qs = p.toString();
       return qs ? `/stats?${qs}` : "/stats";
     }
+    case "data":
+      return "/data";
+    case "settings":
+      return "/settings";
   }
 }
 
@@ -93,6 +109,8 @@ function parseRoute(path: string, qs: URLSearchParams): Route {
       date: qs.get("date") || undefined,
     };
   }
+  if (path === "/data") return { kind: "data" };
+  if (path === "/settings") return { kind: "settings" };
   return { kind: "home" };
 }
 
@@ -104,6 +122,10 @@ export function App() {
   const [view, setView] = useState<View>({ kind: "home" });
   const [failedDates, setFailedDates] = useState<FailedDate[]>([]);
   const [aircraftTypes, setAircraftTypes] = useState<AircraftType[]>([]);
+
+  // Display preferences, persisted in this browser
+  const [settings, setSettingsState] = useState<Settings>(() => loadSettings());
+  const applySettings = (next: Settings) => setSettingsState(saveSettings(next));
 
   // Advanced search fields
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -204,6 +226,12 @@ export function App() {
         } finally {
           setLoading(false);
         }
+        break;
+      case "data":
+        setView({ kind: "data" });
+        break;
+      case "settings":
+        setView({ kind: "settings" });
         break;
     }
   }, []);
@@ -367,6 +395,18 @@ export function App() {
     pushRoute({ kind: "home" });
   };
 
+  const goData = () => {
+    setView({ kind: "data" });
+    setError("");
+    pushRoute({ kind: "data" });
+  };
+
+  const goSettings = () => {
+    setView({ kind: "settings" });
+    setError("");
+    pushRoute({ kind: "settings" });
+  };
+
   const goStats = useCallback(async (period?: string, date?: string) => {
     setLoading(true);
     setError("");
@@ -381,6 +421,13 @@ export function App() {
     }
   }, [pushRoute]);
 
+  // Data, Statistics and Settings are not search surfaces.
+  const searchVisible =
+    view.kind === "home" ||
+    view.kind === "quickResults" ||
+    view.kind === "advancedResults" ||
+    view.kind === "detail";
+
   return (
     <div>
       <div class="header" onClick={goHome} style={{ cursor: "pointer" }}>
@@ -388,32 +435,56 @@ export function App() {
           <span class="plane-icon">✈</span>
           <h1>Sky History</h1>
         </div>
-        <UtcClock />
+        <Clock />
       </div>
 
-      {stats && <StatsBar stats={stats} failedDates={failedDates} onStatsClick={() => goStats()} />}
+      <Nav
+        current={view.kind}
+        failedCount={failedDates.length}
+        onStart={goHome}
+        onData={goData}
+        onStats={() => goStats()}
+        onSettings={goSettings}
+      />
 
-      {/* Quick Search */}
-      <form class="search-box" onSubmit={handleSubmit}>
-        <input
-          type="text"
-          placeholder="Search by callsign, ICAO hex, registration, or type..."
-          value={query}
-          onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
-          autofocus
-        />
-        <button type="submit" disabled={loading || !query.trim()}>
-          {loading ? "..." : "Search"}
-        </button>
-        <button
-          type="button"
-          class={showAdvanced ? "toggle-btn active" : "toggle-btn"}
-          onClick={() => setShowAdvanced(!showAdvanced)}
-          title="Advanced Search"
-        >
-          ⚙
-        </button>
-      </form>
+      {/* Search belongs to Start and to the pages showing its results. */}
+      {searchVisible && (
+        <div class="search-area">
+          <div class="search-mode" role="tablist" aria-label="Search mode">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!showAdvanced}
+              class={showAdvanced ? "search-mode-btn" : "search-mode-btn active"}
+              onClick={() => setShowAdvanced(false)}
+            >
+              Quick search
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={showAdvanced}
+              class={showAdvanced ? "search-mode-btn active" : "search-mode-btn"}
+              onClick={() => setShowAdvanced(true)}
+            >
+              Filters
+            </button>
+          </div>
+
+          {!showAdvanced && (
+            <form class="search-box" onSubmit={handleSubmit}>
+              <input
+                type="text"
+                placeholder="Search by callsign, ICAO hex, registration, or type..."
+                value={query}
+                onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
+                autofocus
+              />
+              <button type="submit" disabled={loading || !query.trim()}>
+                {loading ? "..." : "Search"}
+              </button>
+            </form>
+          )}
 
       {/* Advanced Search Panel */}
       {showAdvanced && (
@@ -462,6 +533,8 @@ export function App() {
           </button>
         </form>
       )}
+        </div>
+      )}
 
       {error && <div class="error">{error}</div>}
 
@@ -507,65 +580,237 @@ export function App() {
           onPeriodChange={(period, date) => goStats(period, date)}
         />
       )}
+
+      {view.kind === "data" && <DataPage stats={stats} failedDates={failedDates} />}
+
+      {view.kind === "settings" && (
+        <SettingsPage settings={settings} onChange={applySettings} />
+      )}
     </div>
   );
 }
 
-function UtcClock() {
-  const [now, setNow] = useState(() => new Date().toISOString().slice(0, 19).replace("T", " "));
+function Clock() {
+  const render = () => {
+    const { timezone } = getSettings();
+    const d = new Date();
+    if (timezone === "utc") {
+      return `${d.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+    }
+    const date = formatDate(
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+    );
+    return `${date} ${formatTime(d.toISOString())}`;
+  };
+
+  const [now, setNow] = useState(render);
 
   useEffect(() => {
-    const id = setInterval(() => {
-      setNow(new Date().toISOString().slice(0, 19).replace("T", " "));
-    }, 1000);
+    const id = setInterval(() => setNow(render()), 1000);
     return () => clearInterval(id);
-  }, []);
+  });
 
-  return <span class="utc-clock">{now} UTC</span>;
+  return <span class="utc-clock" title={timezoneTooltip()}>{now}</span>;
 }
 
-function StatsBar({ stats, failedDates, onStatsClick }: { stats: Stats; failedDates: FailedDate[]; onStatsClick: () => void }) {
-  const [showFailed, setShowFailed] = useState(false);
+type NavKey = "start" | "data" | "stats" | "settings";
+
+const NAV_ITEMS: { key: NavKey; label: string }[] = [
+  { key: "start", label: "Start" },
+  { key: "data", label: "Data" },
+  { key: "stats", label: "Statistics" },
+  { key: "settings", label: "Settings" },
+];
+
+function Nav({
+  current,
+  failedCount,
+  onStart,
+  onData,
+  onStats,
+  onSettings,
+}: {
+  current: View["kind"];
+  failedCount: number;
+  onStart: () => void;
+  onData: () => void;
+  onStats: () => void;
+  onSettings: () => void;
+}) {
+  // Search result and aircraft views all live under Start.
+  const active: NavKey =
+    current === "stats" ? "stats"
+    : current === "data" ? "data"
+    : current === "settings" ? "settings"
+    : "start";
+
+  const handlers: Record<NavKey, () => void> = {
+    start: onStart, data: onData, stats: onStats, settings: onSettings,
+  };
 
   return (
-    <div class="stats-bar-wrapper">
-      <div class="stats-bar">
-        <div class="stats-bar-left">
-          <span>
-            Days processed:{" "}
-            <span class="stat-value">{stats.total_releases.toLocaleString()}</span>
-          </span>
-          <span>
-            Aircraft:{" "}
-            <span class="stat-value">{stats.total_aircraft.toLocaleString()}</span>
-          </span>
-          <span>
-            Flights:{" "}
-            <span class="stat-value">{stats.total_flights.toLocaleString()}</span>
-          </span>
-          {stats.oldest_date && stats.newest_date && (
-            <span>
-              Range:{" "}
-              <span class="stat-value">
-                {new Date(stats.oldest_date).toLocaleDateString()} — {new Date(stats.newest_date).toLocaleDateString()}
-              </span>
+    <nav class="main-nav" aria-label="Main">
+      {NAV_ITEMS.map(item => (
+        <button
+          key={item.key}
+          type="button"
+          class={active === item.key ? "nav-btn active" : "nav-btn"}
+          aria-current={active === item.key ? "page" : undefined}
+          onClick={handlers[item.key]}
+        >
+          {item.label}
+          {item.key === "data" && failedCount > 0 && (
+            <span class="nav-badge" title={`${failedCount} date(s) failed processing`}>
+              {failedCount}
             </span>
           )}
-          <a href="#" class="stats-link" onClick={(e) => { e.preventDefault(); onStatsClick(); }}>📊 Statistics</a>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function DataPage({ stats, failedDates }: { stats: Stats | null; failedDates: FailedDate[] }) {
+  return (
+    <div class="page">
+      <h2>Data</h2>
+      <p class="page-intro">
+        What has been downloaded from adsb.lol and parsed into this database.
+      </p>
+
+      {stats ? (
+        <div class="data-grid">
+          <div class="data-item">
+            <span class="data-value">{stats.total_releases.toLocaleString()}</span>
+            <span class="data-label">Days processed</span>
+          </div>
+          <div class="data-item">
+            <span class="data-value">{stats.total_aircraft.toLocaleString()}</span>
+            <span class="data-label">Aircraft</span>
+          </div>
+          <div class="data-item">
+            <span class="data-value">{stats.total_flights.toLocaleString()}</span>
+            <span class="data-label">Flights</span>
+          </div>
+          {stats.oldest_date && stats.newest_date && (
+            <div class="data-item wide">
+              <span class="data-value small">
+                {formatDate(stats.oldest_date.slice(0, 10))} — {formatDate(stats.newest_date.slice(0, 10))}
+              </span>
+              <span class="data-label">Date range</span>
+            </div>
+          )}
         </div>
-        {failedDates.length > 0 && (
-          <button
-            class={"failed-dates-btn" + (showFailed ? " active" : "")}
-            onClick={() => setShowFailed(!showFailed)}
-            title={`${failedDates.length} date(s) failed processing`}
-          >
-            ⚠ {failedDates.length}
-          </button>
-        )}
-      </div>
-      {showFailed && failedDates.length > 0 && (
-        <FailedDatesBanner dates={failedDates} />
+      ) : (
+        <p class="muted">Loading…</p>
       )}
+
+      <h3>Processing errors</h3>
+      {failedDates.length === 0 ? (
+        <p class="muted">Every release so far has been parsed without errors.</p>
+      ) : (
+        <>
+          <p class="page-intro">
+            {failedDates.length === 1
+              ? "One release could not be parsed, so its flights are missing."
+              : `${failedDates.length} releases could not be parsed, so their flights are missing.`}
+          </p>
+          <div class="failed-table-wrap">
+            <table class="failed-table">
+              <thead>
+                <tr><th>Date</th><th>Release</th><th>Attempts</th><th>Error</th></tr>
+              </thead>
+              <tbody>
+                {failedDates.map(fd => (
+                  <tr key={fd.tag}>
+                    <td class="mono failed-date-cell">{formatDate(fd.date)}</td>
+                    <td class="mono">{fd.tag}</td>
+                    <td data-label="Attempts">{fd.attempts}</td>
+                    <td class="failed-reason" data-label="Error">{fd.last_error}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SettingsPage({
+  settings,
+  onChange,
+}: {
+  settings: Settings;
+  onChange: (s: Settings) => void;
+}) {
+  const sample = "2026-02-14T19:09:00Z";
+
+  return (
+    <div class="page">
+      <h2>Settings</h2>
+      <p class="page-intro">
+        Saved in this browser only. Changing these affects how times and dates are
+        shown; the stored data is always UTC and is never altered.
+      </p>
+
+      <fieldset class="setting">
+        <legend>Time zone</legend>
+        <p class="setting-help">
+          Flight times are recorded in UTC. Showing them in your own zone shifts
+          the clock only — a flight stays listed under the UTC day it was recorded.
+        </p>
+        <div class="setting-options">
+          <label class="setting-option">
+            <input type="radio" name="tz" checked={settings.timezone === "utc"}
+              onChange={() => onChange({ ...settings, timezone: "utc" })} />
+            <span>UTC</span>
+          </label>
+          <label class="setting-option">
+            <input type="radio" name="tz" checked={settings.timezone === "browser"}
+              onChange={() => onChange({ ...settings, timezone: "browser" })} />
+            <span>This browser's time zone</span>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset class="setting">
+        <legend>Clock</legend>
+        <div class="setting-options">
+          <label class="setting-option">
+            <input type="radio" name="tf" checked={settings.timeFormat === "24"}
+              onChange={() => onChange({ ...settings, timeFormat: "24" })} />
+            <span>24-hour</span>
+          </label>
+          <label class="setting-option">
+            <input type="radio" name="tf" checked={settings.timeFormat === "12"}
+              onChange={() => onChange({ ...settings, timeFormat: "12" })} />
+            <span>12-hour</span>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset class="setting">
+        <legend>Date format</legend>
+        <div class="setting-options">
+          {DATE_FORMAT_OPTIONS.map(opt => (
+            <label class="setting-option" key={opt.value}>
+              <input type="radio" name="df" checked={settings.dateFormat === opt.value}
+                onChange={() => onChange({ ...settings, dateFormat: opt.value })} />
+              <span>{opt.label}</span>
+              <span class="setting-example mono">{opt.example}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <div class="setting-preview">
+        <span class="data-label">Preview</span>
+        <span class="mono" title={timezoneTooltip()}>
+          {formatDate("2026-02-14")} {formatTime(sample)}
+        </span>
+      </div>
     </div>
   );
 }
@@ -888,8 +1133,8 @@ function FlightTable({
                 )}
                 <td class="mono">{f.callsign}</td>
                 <td>{formatDate(flightDate)}</td>
-                <td>{formatTime(f.first_seen)}</td>
-                <td>{formatTime(f.last_seen)}</td>
+                <td title={timezoneTooltip()}>{formatTime(f.first_seen)}</td>
+                <td title={timezoneTooltip()}>{formatTime(f.last_seen)}</td>
                 <td class="mono">{formatDuration(f.first_seen, f.last_seen)}</td>
                 {showIcao && <td>{f.registration || "-"}</td>}
                 {showIcao && <td>{f.type_code || "-"}</td>}
@@ -965,22 +1210,32 @@ function Pagination({
   );
 }
 
+// Formats a plain calendar date (YYYY-MM-DD). These are the UTC day a release
+// belongs to, not an instant, so the timezone setting deliberately does not
+// shift them -- doing so would file a flight under a day that disagrees with
+// the dataset, the search filters and the aircraft detail URL.
 function formatDate(s: string): string {
-  try {
-    return new Date(s + "T00:00:00").toLocaleDateString();
-  } catch {
-    return s;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (!m) return s;
+  const [, y, mo, d] = m;
+  switch (getSettings().dateFormat) {
+    case "dmy":
+      return `${d}/${mo}/${y}`;
+    case "dmy-dot":
+      return `${d}.${mo}.${y}`;
+    case "mdy":
+      return `${mo}/${d}/${y}`;
+    default:
+      return `${y}-${mo}-${d}`;
   }
 }
 
 function formatDateWithWeekday(s: string): string {
   try {
-    const d = new Date(s + "T00:00:00");
-    const date = d.toLocaleDateString();
-    const weekday = d.toLocaleDateString(undefined, { weekday: "long" });
-    return `${date}, ${weekday}`;
+    const weekday = new Date(s + "T00:00:00").toLocaleDateString(undefined, { weekday: "long" });
+    return `${formatDate(s)}, ${weekday}`;
   } catch {
-    return s;
+    return formatDate(s);
   }
 }
 
@@ -990,11 +1245,16 @@ function shortCount(n: number): string {
   return String(n);
 }
 
+// Formats an instant. Unlike dates, these are points in time, so the timezone
+// setting does shift them. Rendering only -- the stored value is untouched.
 function formatTime(s: string): string {
   try {
-    return new Date(s).toLocaleTimeString([], {
+    const { timezone, timeFormat } = getSettings();
+    return new Date(s).toLocaleTimeString("en-GB", {
       hour: "2-digit",
       minute: "2-digit",
+      hour12: timeFormat === "12",
+      timeZone: timezone === "utc" ? "UTC" : undefined,
     });
   } catch {
     return s;
