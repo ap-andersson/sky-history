@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import brandMarkForDark from "./assets/brand-mark-for-dark.png";
 import brandMarkForLight from "./assets/brand-mark-for-light.png";
+import { getAircraftPhoto, type AircraftPhoto } from "./planespotters";
 import {
   DATE_FORMAT_OPTIONS,
   applyTheme,
@@ -1345,45 +1346,60 @@ function AircraftDetail({
       )}
       {relevantFailed.length > 0 && <FailedDatesBanner dates={relevantFailed} contextual />}
       <div class="card">
-        <div class="aircraft-header">
-          <div>
-            <span class="icao">{icao}</span>
-            {aircraft && (
-              <span class="meta">
-                {[aircraft.registration, aircraft.type_code, aircraft.description]
-                  .filter(Boolean)
-                  .join(" / ")}
-              </span>
-            )}
+        <div class="aircraft-card-body">
+          {/* Everything but the photo, kept together in its own column so the
+              photo's height can never push the date picker or links down --
+              it sits beside this block, not inside it. */}
+          <div class="aircraft-card-main">
+            <div class="aircraft-header">
+              <div>
+                <span class="icao">{icao}</span>
+                {aircraft && (
+                  <span class="meta">
+                    {[aircraft.registration, aircraft.type_code, aircraft.description]
+                      .filter(Boolean)
+                      .join(" / ")}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div class="date-picker-row">
+              <button
+                class="date-nav-btn"
+                onClick={() => onDateChange(shiftDate(date, -1))}
+                title="Previous day"
+              >
+                ◀
+              </button>
+              <label>
+                Date:
+                <input
+                  type="date"
+                  value={date}
+                  onChange={(e) => onDateChange((e.target as HTMLInputElement).value)}
+                />
+              </label>
+              <button
+                class="date-nav-btn"
+                onClick={() => onDateChange(shiftDate(date, 1))}
+                title="Next day"
+              >
+                ▶
+              </button>
+            </div>
+
+            {links.length > 0 && <ExternalLinks links={links} />}
           </div>
-        </div>
 
-        <div class="date-picker-row">
-          <button
-            class="date-nav-btn"
-            onClick={() => onDateChange(shiftDate(date, -1))}
-            title="Previous day"
-          >
-            ◀
-          </button>
-          <label>
-            Date:
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => onDateChange((e.target as HTMLInputElement).value)}
+          {aircraft && (
+            <AircraftPhotoBox
+              icao={icao}
+              registration={aircraft.registration}
+              typeCode={aircraft.type_code}
             />
-          </label>
-          <button
-            class="date-nav-btn"
-            onClick={() => onDateChange(shiftDate(date, 1))}
-            title="Next day"
-          >
-            ▶
-          </button>
+          )}
         </div>
-
-        {links.length > 0 && <ExternalLinks links={links} />}
       </div>
 
       <h2>{total} flight(s) on {formatDate(date)}</h2>
@@ -1399,6 +1415,55 @@ function AircraftDetail({
       ) : (
         <div class="empty">No flights recorded on this date.</div>
       )}
+    </div>
+  );
+}
+
+// A small photo of the aircraft from planespotters.net, following the same
+// approach tar1090 uses when you select an aircraft: fetched client-side by
+// ICAO hex, credited to its photographer, and linking back to its page there.
+// undefined while the lookup is in flight, null once it has resolved to "no
+// photo found" -- the two need different rendering (a loading placeholder vs.
+// nothing at all).
+function AircraftPhotoBox({
+  icao,
+  registration,
+  typeCode,
+}: {
+  icao: string;
+  registration?: string;
+  typeCode?: string;
+}) {
+  const [photo, setPhoto] = useState<AircraftPhoto | null | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPhoto(undefined);
+    getAircraftPhoto(icao, registration, typeCode).then((p) => {
+      if (!cancelled) setPhoto(p);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [icao, registration, typeCode]);
+
+  if (photo === null) return null;
+
+  if (photo === undefined) {
+    return <div class="aircraft-photo aircraft-photo-loading" aria-hidden="true" />;
+  }
+
+  return (
+    <div class="aircraft-photo">
+      <a
+        href={photo.link}
+        target="_blank"
+        rel="noopener noreferrer"
+        title="View source on planespotters.net"
+      >
+        <img src={photo.thumbnailUrl} alt={`Photo of ${registration || icao}`} loading="lazy" />
+      </a>
+      <span class="aircraft-photo-credit">Image © {photo.photographer}</span>
     </div>
   );
 }

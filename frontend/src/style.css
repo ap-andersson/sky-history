@@ -239,6 +239,21 @@ a:hover {
   margin-bottom: 1rem;
 }
 
+/* The photo sits beside this whole block (see .aircraft-card-body), not
+   inside it, so nothing in here needs to make room for it. */
+.aircraft-card-body {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.aircraft-card-main {
+  flex: 1;
+  min-width: 200px;
+}
+
 .aircraft-header {
   display: flex;
   justify-content: space-between;
@@ -1214,5 +1229,89 @@ tr:hover td {
 @media (max-width: 600px) {
   .feeder-item {
     flex-wrap: wrap;
+  }
+}
+
+/* --- Aircraft photo (planespotters.net) --------------------------------- */
+
+/* Same 8px radius as .card, so the photo reads as one more box in the same
+   layout rather than a foreign element -- overflow: hidden does the actual
+   rounding, since the photo underneath is a plain rectangle. */
+.aircraft-photo {
+  position: relative;
+  width: 220px;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.aircraft-photo a {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.aircraft-photo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* Photos come back at a fixed height but a variable width (their own
+     aspect ratio), so cropping to fill this fixed-ratio box is unavoidable;
+     cover keeps the crop centered rather than stretching the image. */
+  object-fit: cover;
+}
+
+/* The credit sits over the photo itself, not over the app's own background,
+   so it uses a fixed white-on-scrim treatment rather than the themed text
+   colors -- it needs to stay legible over an arbitrary photo in both themes,
+   not blend in with the surrounding card. */
+.aircraft-photo-credit {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 0.3rem 0.5rem;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.65), transparent);
+  color: #fff;
+  font-size: 0.7rem;
+  text-align: right;
+  pointer-events: none;
+}
+
+/* Shown while the photo is loading, so the layout doesn't jump once it
+   resolves either way. */
+.aircraft-photo-loading {
+  background-image: linear-gradient(
+    90deg,
+    var(--bg) 25%,
+    var(--surface) 50%,
+    var(--bg) 75%
+  );
+  background-size: 200% 100%;
+  animation: aircraft-photo-shimmer 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aircraft-photo-loading {
+    animation: none;
+  }
+}
+
+@keyframes aircraft-photo-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .aircraft-photo {
+    width: 100%;
   }
 }

@@ -771,6 +771,8 @@ startup, but anything in `db/maintenance/` must be run by hand.
 
 Flight data comes from [adsblol/globe_history_2026](https://github.com/adsblol/globe_history_2026), a community project that archives global ADS-B data collected by the [adsb.lol](https://adsb.lol) network. Each daily release contains readsb trace files for every aircraft observed that day.
 
+Aircraft photos on the detail page come from [planespotters.net](https://www.planespotters.net), fetched client-side by ICAO hex the same way [tar1090](https://github.com/wiedehopf/tar1090) does when you select an aircraft — no API key, no backend involved. Every photo shown credits its photographer and links back to its page on planespotters.net, per their [photo API terms](https://www.planespotters.net/photo/api).
+
 ---
 
 ## License

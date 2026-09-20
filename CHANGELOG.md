@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-20
+
+A photo of the aircraft on its detail page.
+
+### Added
+
+- **An aircraft photo** on `/aircraft/:icao`, fetched from
+  [planespotters.net](https://www.planespotters.net) by ICAO hex (refined with
+  registration and type once known) the same way tar1090 does it when you
+  select an aircraft on the map: a plain client-side `fetch`, no API key, no
+  backend involved. Every photo credits its photographer and links back to its
+  page on planespotters.net, opened in a new tab, per their photo API terms —
+  see the new note under [Data Source](#data-source). Resolves to no photo
+  shown, silently, whenever none is found or the lookup fails; this is a
+  nice-to-have next to the archive data, not something worth an error state
+  for. Cached in memory for the life of the tab, since the photo cannot change
+  while flipping between dates for the same aircraft.
+
+### Changed
+
+- The photo sits beside the aircraft card's date picker and external links as
+  a sibling of that whole block (`.aircraft-card-body`), not inside the
+  single-line header row next to the ICAO text. It first shipped inside that
+  row, where a photo taller than one line of text stretched the row and
+  pushed the date picker and links down with it — and on narrow screens
+  wedged itself between the ICAO line and the date picker rather than
+  wrapping to the end of the block. Sitting beside the whole column instead
+  means the photo's height can only ever change the card's total height, never
+  the spacing between the controls inside it.
+
 ## [1.5.0] - 2026-09-20
 
 A light theme, and a real logo in place of the ✈ placeholder.
@@ -346,7 +376,8 @@ Initial state of the project prior to versioned releases: processor, API,
 frontend and PostgreSQL schema, deployed via Docker Compose with images built
 from `main`. Never formally tagged; recorded here for continuity.
 
-[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.6.0
 [1.5.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.5.0
 [1.4.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.4.0
 [1.3.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.3.0
