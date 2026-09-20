@@ -6,7 +6,7 @@
   </picture>
 </p>
 
-<h1 align="center">Sky-History</h1>
+<h1 align="center">SkyHistory</h1>
 
 > **Attribution:** This project was designed and implemented with the assistance of **Claude** (Anthropic), an AI programming assistant.
 

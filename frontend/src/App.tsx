@@ -518,7 +518,7 @@ export function App() {
             width="60"
             height="42"
           />
-          <h1>Sky History</h1>
+          <h1>SkyHistory</h1>
         </div>
         <Clock />
       </div>
