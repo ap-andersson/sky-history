@@ -34,6 +34,17 @@ type Config struct {
 
 	// How long to wait for a submitted feeder to answer.
 	ProbeTimeout time.Duration
+
+	// Master switch for the public API (/api/public/*). Off unless explicitly
+	// enabled, for the same reason as EnableLiveGapFill: an existing
+	// deployment that updates should not suddenly start answering requests
+	// from strangers on the internet.
+	EnablePublicAPI bool
+
+	// Requests allowed per API key per minute. There is no cost to raising or
+	// lowering it later -- nothing about this value is baked into the schema
+	// or the client contract.
+	PublicAPIRateLimitPerMinute int
 }
 
 func Load() Config {
@@ -54,6 +65,9 @@ func Load() Config {
 		SubmitIPSalt:        []byte(env.Get("SUBMIT_IP_SALT", "")),
 		AllowPrivateFeeders: env.GetBool("ALLOW_PRIVATE_FEEDERS", false),
 		ProbeTimeout:        env.GetDuration("FEEDER_PROBE_TIMEOUT", 10*time.Second),
+
+		EnablePublicAPI:             env.GetBool("ENABLE_PUBLIC_API", false),
+		PublicAPIRateLimitPerMinute: env.GetInt("PUBLIC_API_RATE_LIMIT_PER_MINUTE", 120),
 	}
 }
 

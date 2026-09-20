@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-20
+
+A public, read-only API for search and stats.
+
+### Added
+
+- **`/api/public/search`** and **`/api/public/stats`**, registered only when
+  `ENABLE_PUBLIC_API=true`. Thin wrappers around the same handlers the
+  frontend already calls internally, so a public response is byte for byte
+  what the internal one is -- no separate schema to keep in sync as the app's
+  own response shapes change.
+- **`api_keys` table**, minted with two SQL statements (`pgcrypto`'s
+  `gen_random_bytes` + `digest`) rather than any admin UI or CLI -- the same
+  "flip a column by hand" pattern feeders already use for approval. Only a
+  hash of the key is ever stored. `last_used_at` and `request_count` update on
+  every authorized request.
+- **Two rate-limit layers.** A per-key limit (`PUBLIC_API_RATE_LIMIT_PER_MINUTE`,
+  default 120, shared across both endpoints, no per-key override) returns
+  `429` with `X-RateLimit-Limit`/`X-RateLimit-Remaining` headers on every
+  response. A separate, tighter, per-address guard (20/min, not configurable)
+  sits ahead of key validation specifically on the missing-key and
+  wrong-key paths, since a guessed key still costs a database lookup and
+  would otherwise let an attacker spam guesses for free.
+- **`api/handlers/ratelimit.go`**: a `slidingWindowLimiter` extracted from the
+  feeder submission form's existing burst guard rather than writing a second
+  copy for the public API. The feeder handler now uses it too.
+- **An "API" page**, shown once the feature is enabled: what's available, the
+  rate limit (read live from `/api/config` rather than hardcoded, so it can
+  never drift from what is actually deployed), and how to request a key by
+  emailing skyhistory@andymail.net. Full parameter documentation stays in the
+  README rather than being duplicated in the UI.
+- **A `## Public API` README section**: minting and revoking a key, both
+  rate-limit layers explained (including what nginx's own `limit_req` is
+  actually limiting on -- source IP, not key, since nginx never sees one --
+  and why it needs *more* headroom than the per-key limit, not less), and an
+  optional nginx snippet for a coarse outer guard in front of the real one.
+
+### Fixed
+
+- The per-address guard above was, until now, checked on *every* request
+  regardless of whether it carried a valid key -- so a single legitimate
+  integration could never exceed 20/min no matter what
+  `PUBLIC_API_RATE_LIMIT_PER_MINUTE` was set to. It now only applies on the
+  missing-key and wrong-key paths; a valid key's traffic goes straight to the
+  per-key limiter untouched. Caught by asking why an outer per-source limit
+  would ever need to be *lower* than the per-key limit it sits in front of --
+  it shouldn't, and the code did not actually match what the docs already
+  described.
+- `h2` (every page's own title) was set to `var(--text-dim)` while `h3`
+  (its subsections) inherited full brightness, so a page's title read dimmer
+  than its own subheadings. Removed the override.
+- `.failed-table-wrap` (the Data page's error table, and the API page's
+  endpoint table) had no margin at all, so whatever followed sat flush
+  against it.
+
 ## [1.6.0] - 2026-09-20
 
 A photo of the aircraft on its detail page.
@@ -376,7 +431,8 @@ Initial state of the project prior to versioned releases: processor, API,
 frontend and PostgreSQL schema, deployed via Docker Compose with images built
 from `main`. Never formally tagged; recorded here for continuity.
 
-[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.7.0
 [1.6.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.6.0
 [1.5.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.5.0
 [1.4.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.4.0

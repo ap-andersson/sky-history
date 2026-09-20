@@ -85,7 +85,6 @@ h1 {
 h2 {
   font-size: 1.2rem;
   margin-bottom: 0.75rem;
-  color: var(--text-dim);
 }
 
 a {
@@ -932,6 +931,7 @@ tr:hover td {
 
 .failed-table-wrap {
   overflow-x: auto;
+  margin-bottom: 1rem;
 }
 
 .failed-table {

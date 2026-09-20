@@ -54,15 +54,14 @@ between the last published release and now.
 6. **Collector** polls approved feeders and writes provisional rows for the
    window the archive has not reached yet; the processor replaces them when the
    matching release lands.
-7. **Frontend** provides a dark-themed UI with five sections: **Start** (quick search or multi-filter search, and per-aircraft date-scoped detail pages), **Data** (what has been processed, and any releases that failed to parse), **Statistics**, **Feeders** (the live gap-fill roster and submit form), and **Settings**.
+7. **Frontend** provides a dark-themed UI with six sections: **Start** (quick search or multi-filter search, and per-aircraft date-scoped detail pages), **Data** (what has been processed, and any releases that failed to parse), **Statistics**, **Feeders** (the live gap-fill roster and submit form), **API** (what the public API offers and how to request access), and **Settings**.
 
 ---
 
 ### Todo
 
-1. Handle API request from outside the stack (requires auth etc)
-2. Maybe add some more flight info?
-3. An approval UI, so feeders do not have to be enabled with psql
+1. Maybe add some more flight info?
+2. An approval UI, so feeders do not have to be enabled with psql
 
 
 ---
@@ -202,6 +201,8 @@ services:
       ENABLE_LIVE_GAPFILL: ${ENABLE_LIVE_GAPFILL:-false}
       SUBMIT_IP_SALT: ${SUBMIT_IP_SALT:-}
       ALLOW_PRIVATE_FEEDERS: ${ALLOW_PRIVATE_FEEDERS:-false}
+      ENABLE_PUBLIC_API: ${ENABLE_PUBLIC_API:-false}
+      PUBLIC_API_RATE_LIMIT_PER_MINUTE: ${PUBLIC_API_RATE_LIMIT_PER_MINUTE:-120}
     networks:
       - skyhistory
 
@@ -278,6 +279,8 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `FEEDER_PROBE_TIMEOUT` | `10s`                            | Timeout when checking a newly submitted feeder.                                                  |
 | `SUBMIT_IP_SALT`   | *(random per restart)*               | Secret keying the hash of a submitter's IP, used only for rate limiting. See [Live gap-fill](#live-gap-fill). |
 | `ALLOW_PRIVATE_FEEDERS` | `false`                         | Allow feeder URLs on private/loopback addresses. **Unsafe on a public deployment** — see [Live gap-fill](#live-gap-fill). |
+| `ENABLE_PUBLIC_API` | `false`                             | **Master switch for the public API.** Off by default: `/api/public/*` is not registered at all. See [Public API](#public-api). |
+| `PUBLIC_API_RATE_LIMIT_PER_MINUTE` | `120`                 | Requests allowed per API key per minute. Applies to every key equally; there is no per-key override.  |
 
 ---
 
@@ -327,7 +330,7 @@ All endpoints return JSON and are accessible under `/api/`.
 | GET    | `/api/health` | Health check (`{"status":"ok"}`) |
 | GET    | `/api/stats`  | Processing statistics (total aircraft, flights, releases, oldest/newest date range) |
 | GET    | `/api/failed-dates` | Dates that permanently failed processing (corrupt tarballs, etc.) |
-| GET    | `/api/config` | Which optional features are enabled (`{"live_gap_fill": false}`) |
+| GET    | `/api/config` | Which optional features are enabled, e.g. `{"live_gap_fill": false, "public_api": false}` |
 
 ### Search
 
@@ -359,11 +362,22 @@ Registered only when `ENABLE_LIVE_GAPFILL=true`; otherwise they return 404.
 
 **Pagination:** `limit` (1–1000, default 50) and `offset` (default 0) on all list endpoints.
 
+### Public API
+
+Registered only when `ENABLE_PUBLIC_API=true`; otherwise they return 404. Needs
+an API key — see [Public API](#public-api) for how to get one and how
+authentication and rate limiting work.
+
+| Method | Path                   | Parameters                     | Description                       |
+|--------|------------------------|---------------------------------|------------------------------------|
+| GET    | `/api/public/search`   | Same as `/api/search` above     | Identical response to the internal endpoint |
+| GET    | `/api/public/stats`    | —                                | Identical response to `/api/stats` above |
+
 ---
 
 ## Database Schema
 
-Six tables are created automatically on startup:
+Seven tables are created automatically on startup:
 
 - **`aircraft`** — ICAO (primary key), registration, type code, description, aircraft_type_id FK, `archive_seen` (whether a release has confirmed it; statistics count only these)
 - **`aircraft_types`** — Lookup table of unique aircraft types (type code + description)
@@ -371,6 +385,7 @@ Six tables are created automatically on startup:
 - **`processed_releases`** — Tracks which GitHub release tags have been processed
 - **`failed_releases`** — Tracks releases that failed processing (with attempt count and permanent flag)
 - **`feeders`** — Submitted ADS-B receivers, their validation result and polling health. `enabled` is the manual approval switch
+- **`api_keys`** — Public API keys: a hash of the key, who it's for, and usage counters. `enabled` is the manual approval switch, same pattern as feeders
 
 Three further tables hold pre-aggregated statistics, maintained by the processor
 after each successful release (see [Statistics rollups](#statistics-rollups)):
@@ -503,6 +518,131 @@ output can be purged:
 ```sql
 DELETE FROM flights WHERE feeder_id = (SELECT id FROM feeders WHERE name = 'Bad feeder');
 ```
+
+---
+
+## Public API
+
+**Off by default.** Set `ENABLE_PUBLIC_API=true` on the `api` service to turn
+it on. Until then `/api/public/*` is not registered at all, so updating an
+existing deployment does not start answering requests from strangers on the
+internet by surprise.
+
+Read-only, and deliberately narrow: two endpoints, `/api/public/search` and
+`/api/public/stats`, each returning exactly what the internal endpoint of the
+same name returns — no separate schema to keep in sync as the app's own
+response shapes change. See [API Endpoints](#api-endpoints) for their
+parameters, and the in-app **API** page (shown once this is enabled) for a
+plain-language overview aimed at someone requesting access rather than
+reading source.
+
+### Authentication
+
+Every request needs an `X-API-Key` header. There is no self-service signup:
+access is granted by a human, by hand, the same way a feeder is approved.
+
+Keys are minted with two SQL statements. Only a SHA-256 hash of the key is
+ever stored — like a password, so that reading the database does not hand
+back a live key — computed with `pgcrypto`, which the migration that creates
+`api_keys` also enables:
+
+```sql
+-- 1. Generate a key
+SELECT encode(gen_random_bytes(32), 'hex');
+-- → copy the output; this is the only time it is ever visible. Send it to
+--   whoever asked for access; nothing here keeps a copy.
+
+-- 2. Store its hash
+INSERT INTO api_keys (key_hash, name, contact, purpose)
+VALUES (
+    encode(digest('<paste the key from step 1>', 'sha256'), 'hex'),
+    'Whoever this is for',
+    'their@email',
+    'what they said they want it for'
+);
+```
+
+Revoke a key the same way `feeders.enabled` is flipped:
+
+```sql
+UPDATE api_keys SET enabled = FALSE WHERE name = 'Whoever this is for';
+```
+
+`last_used_at` and `request_count` update on every authorized request, so
+`SELECT * FROM api_keys` doubles as a quick look at who is actually using
+theirs.
+
+A missing, wrong, or disabled key all return the same `401` — a wrong key
+cannot be distinguished from a disabled one by probing.
+
+### Rate limiting
+
+`PUBLIC_API_RATE_LIMIT_PER_MINUTE` (default `120`) applies per key, shared
+across both endpoints — there is no per-endpoint or per-key override, by
+design, to keep this simple; raise or lower the one setting if it ever needs
+to change. Going over it returns `429`, and every response carries
+`X-RateLimit-Limit` and `X-RateLimit-Remaining` headers so a well-behaved
+integration can watch it coming rather than guess.
+
+Requests with no key or an invalid one never reach that per-key limiter, so
+they have their own separate, tighter, per-address limit (20/minute, not
+configurable) ahead of it — otherwise spamming garbage keys would cost an
+attacker nothing. A real integration with a valid key will never come close to
+it.
+
+Both limits are held in memory, per API process, the same technique the
+feeder submission form already uses for its own burst guard. That is enough
+at this project's scale — one API instance, not a fleet — and needs no new
+infrastructure (no Redis, nothing shared across processes). It resets on a
+restart, which only means a very brief window of leniency, not a gap in
+enforcement.
+
+### Response shape
+
+Deliberately identical to what this project's own frontend receives from the
+internal endpoints — nothing is trimmed or reshaped for external use. Flight
+data is already public (it comes from adsb.lol, itself community-contributed),
+so there was nothing to hide; keeping one response shape instead of two is
+simply less to maintain.
+
+### Where the auth and rate-limit logic lives
+
+Entirely inside the existing `api` Go service, under the `/api/public/`
+prefix — nothing new to deploy, and no nginx changes for a production
+deployment following the example Compose file: its `location /api/` proxy
+rule already forwards everything under `/api/`, including this.
+
+An **optional** addition at the nginx layer, worth understanding rather than
+pasting in blindly:
+
+```nginx
+limit_req_zone $binary_remote_addr zone=publicapi:10m rate=5r/s;
+
+location /api/public/ {
+    limit_req zone=publicapi burst=10 nodelay;
+    proxy_pass http://api:8081;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+This limits by **source IP address** (`$binary_remote_addr`) — nginx never
+sees an API key, only the connection, so it cannot rate-limit *per key* the
+way the Go service does. It is a coarse outer guard sitting in front of the
+real, key-aware limiting above, not a second copy of it, and the two answer
+different questions: nginx caps how fast one address can talk to this path at
+all; the app caps how fast one key can be used, regardless of how many
+addresses it is used from.
+
+Because it is IP-based, it needs **more** headroom than the per-key limit, not
+less: one key normally means one integration behind one address, so `5r/s`
+(300/min) sitting well above the `120/min` per-key default leaves a real
+integration free to use its whole budget without nginx ever getting in the
+way first. If several keys might legitimately share one address — several
+integrations behind the same NAT or gateway — raise this further, since
+nginx would otherwise cap their combined traffic as if it were one key's
+worth, which is not what it is measuring.
 
 ---
 

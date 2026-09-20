@@ -50,7 +50,18 @@ func main() {
 		log.Println("Live gap-fill is off. Set ENABLE_LIVE_GAPFILL=true to turn it on.")
 	}
 
-	handler := handlers.NewHandler(queries, linkGen, feederHandler)
+	// Left nil when the feature is off, which unregisters /api/public/*
+	// rather than merely hiding it in the UI.
+	var publicAPI *handlers.PublicAPIHandler
+	if cfg.EnablePublicAPI {
+		publicAPI = handlers.NewPublicAPIHandler(queries, cfg.PublicAPIRateLimitPerMinute)
+		log.Printf("Public API is ENABLED: /api/public/* accepts requests with a valid X-API-Key (%d req/min per key).",
+			cfg.PublicAPIRateLimitPerMinute)
+	} else {
+		log.Println("Public API is off. Set ENABLE_PUBLIC_API=true to turn it on.")
+	}
+
+	handler := handlers.NewHandler(queries, linkGen, feederHandler, publicAPI)
 
 	// Set up routes
 	mux := http.NewServeMux()

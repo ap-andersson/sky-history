@@ -29,14 +29,20 @@ type Handler struct {
 	// absent rather than merely hidden: the endpoints are not registered, so
 	// there is nothing to reach by guessing a URL.
 	feeders *FeederHandler
+
+	// nil when the public API is switched off, same reasoning as feeders.
+	publicAPI *PublicAPIHandler
 }
 
-func NewHandler(queries *db.Queries, linkGen *links.Generator, feeders *FeederHandler) *Handler {
-	return &Handler{queries: queries, links: linkGen, feeders: feeders}
+func NewHandler(queries *db.Queries, linkGen *links.Generator, feeders *FeederHandler, publicAPI *PublicAPIHandler) *Handler {
+	return &Handler{queries: queries, links: linkGen, feeders: feeders, publicAPI: publicAPI}
 }
 
 // liveEnabled reports whether the live gap-fill feature is switched on.
 func (h *Handler) liveEnabled() bool { return h.feeders != nil }
+
+// publicAPIEnabled reports whether the public API is switched on.
+func (h *Handler) publicAPIEnabled() bool { return h.publicAPI != nil }
 
 // RegisterRoutes sets up all API routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
@@ -56,15 +62,31 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("GET /api/feeders", h.feeders.ListFeeders)
 		mux.HandleFunc("POST /api/feeders", h.feeders.SubmitFeeder)
 	}
+
+	if h.publicAPIEnabled() {
+		// Wrapping the same handlers the frontend calls internally: a public
+		// response is byte for byte what the internal one is, just gated
+		// behind a key and a rate limit. See publicapi.go.
+		mux.HandleFunc("GET /api/public/search", h.publicAPI.wrap(h.Search))
+		mux.HandleFunc("GET /api/public/stats", h.publicAPI.wrap(h.Stats))
+	}
 }
 
 // Config tells the frontend which optional features this deployment has on, so
 // the UI can leave them out entirely rather than offering something the API
 // would refuse.
 func (h *Handler) Config(w http.ResponseWriter, r *http.Request) {
-	jsonResponse(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"live_gap_fill": h.liveEnabled(),
-	})
+		"public_api":    h.publicAPIEnabled(),
+	}
+	// Included so the API docs page can state the real configured limit
+	// rather than a number hardcoded into the frontend that could drift from
+	// what PUBLIC_API_RATE_LIMIT_PER_MINUTE is actually set to.
+	if h.publicAPIEnabled() {
+		resp["public_api_rate_limit_per_minute"] = h.publicAPI.rateLimit
+	}
+	jsonResponse(w, http.StatusOK, resp)
 }
 
 // includeLive reports whether the caller has opted into the collector's live

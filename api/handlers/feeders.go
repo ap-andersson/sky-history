@@ -8,10 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/sky-history/api/db"
@@ -47,8 +45,7 @@ type FeederHandler struct {
 	// hashing every address in the space, which is small enough to exhaust.
 	ipSalt []byte
 
-	mu     sync.Mutex
-	recent map[string][]time.Time
+	burst *slidingWindowLimiter
 }
 
 func NewFeederHandler(queries *db.Queries, probeTimeout time.Duration, allowPrivate bool, ipSalt []byte) *FeederHandler {
@@ -67,7 +64,7 @@ func NewFeederHandler(queries *db.Queries, probeTimeout time.Duration, allowPriv
 		queries: queries,
 		probe:   feedcheck.NewClient(probeTimeout, allowPrivate),
 		ipSalt:  ipSalt,
-		recent:  make(map[string][]time.Time),
+		burst:   newSlidingWindowLimiter(submitBurstWindow, submitBurstMax),
 	}
 }
 
@@ -134,7 +131,7 @@ func (h *FeederHandler) SubmitFeeder(w http.ResponseWriter, r *http.Request) {
 
 	// Both limits are checked before the probe, so a flood of submissions
 	// cannot be turned into a flood of outbound requests.
-	if !h.allowBurst(ipHash) {
+	if !h.burst.allow(ipHash) {
 		jsonError(w, http.StatusTooManyRequests, "too many submissions just now; try again in a minute")
 		return
 	}
@@ -203,52 +200,7 @@ func (h *FeederHandler) SubmitFeeder(w http.ResponseWriter, r *http.Request) {
 // hashIP turns the submitting address into a keyed hash. The address itself is
 // never stored or logged, and the hash cannot be reversed without the salt.
 func (h *FeederHandler) hashIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-
-	// X-Forwarded-For is trusted here because the frontend's nginx sets it and
-	// is the only thing that reaches this service. Exposing the API directly
-	// would make it forgeable, which would defeat the rate limit but reveals
-	// nothing.
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		if first := strings.TrimSpace(strings.Split(fwd, ",")[0]); first != "" {
-			host = first
-		}
-	}
-
 	mac := hmac.New(sha256.New, h.ipSalt)
-	mac.Write([]byte(host))
+	mac.Write([]byte(clientAddr(r)))
 	return hex.EncodeToString(mac.Sum(nil))
-}
-
-// allowBurst is an in-memory limit on how fast one address may submit.
-func (h *FeederHandler) allowBurst(ipHash string) bool {
-	now := time.Now()
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	// Sweeping the whole map on each submission keeps it from growing without
-	// bound; submissions are rare enough that the cost never matters.
-	for key, times := range h.recent {
-		kept := times[:0]
-		for _, t := range times {
-			if now.Sub(t) < submitBurstWindow {
-				kept = append(kept, t)
-			}
-		}
-		if len(kept) == 0 {
-			delete(h.recent, key)
-		} else {
-			h.recent[key] = kept
-		}
-	}
-
-	if len(h.recent[ipHash]) >= submitBurstMax {
-		return false
-	}
-	h.recent[ipHash] = append(h.recent[ipHash], now)
-	return true
 }

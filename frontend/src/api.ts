@@ -255,6 +255,9 @@ export async function submitFeeder(params: {
 
 export interface AppConfig {
   live_gap_fill: boolean;
+  public_api: boolean;
+  // Only present when public_api is true.
+  public_api_rate_limit_per_minute?: number;
 }
 
 /**

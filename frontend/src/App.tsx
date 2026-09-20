@@ -45,6 +45,7 @@ type View =
   | { kind: "stats"; data: PeriodStats }
   | { kind: "data" }
   | { kind: "feeders" }
+  | { kind: "apiDocs" }
   | { kind: "settings" };
 
 // Serializable route info for history state
@@ -56,6 +57,7 @@ type Route =
   | { kind: "stats"; period?: string; date?: string }
   | { kind: "data" }
   | { kind: "feeders" }
+  | { kind: "apiDocs" }
   | { kind: "settings" };
 
 function routeToPath(route: Route): string {
@@ -92,6 +94,14 @@ function routeToPath(route: Route): string {
       return "/data";
     case "feeders":
       return "/feeders";
+    case "apiDocs":
+      // Deliberately not /api-anything: Vite's dev proxy matches "/api" as a
+      // plain string prefix (no trailing slash), so a path merely starting
+      // with those letters gets forwarded to the Go backend and 404s there.
+      // Production nginx's own proxy rule has a trailing slash and would not
+      // have this problem, but there is no reason to depend on that
+      // difference between the two proxies.
+      return "/developers";
     case "settings":
       return "/settings";
   }
@@ -126,6 +136,7 @@ function parseRoute(path: string, qs: URLSearchParams): Route {
   }
   if (path === "/data") return { kind: "data" };
   if (path === "/feeders") return { kind: "feeders" };
+  if (path === "/developers") return { kind: "apiDocs" };
   if (path === "/settings") return { kind: "settings" };
   return { kind: "home" };
 }
@@ -142,7 +153,7 @@ export function App() {
   // Which optional features this deployment has on. Assume off until the API
   // says otherwise, so a slow or failed config fetch hides the feature rather
   // than offering something that will not work.
-  const [appConfig, setAppConfig] = useState<AppConfig>({ live_gap_fill: false });
+  const [appConfig, setAppConfig] = useState<AppConfig>({ live_gap_fill: false, public_api: false });
 
   // Display preferences, persisted in this browser
   const [settings, setSettingsState] = useState<Settings>(() => loadSettings());
@@ -281,6 +292,9 @@ export function App() {
         // Guarded at render time rather than here: the config fetch may not
         // have landed when a deep link is applied.
         setView({ kind: "feeders" });
+        break;
+      case "apiDocs":
+        setView({ kind: "apiDocs" });
         break;
       case "settings":
         setView({ kind: "settings" });
@@ -466,6 +480,12 @@ export function App() {
     pushRoute({ kind: "feeders" });
   };
 
+  const goApiDocs = () => {
+    setView({ kind: "apiDocs" });
+    setError("");
+    pushRoute({ kind: "apiDocs" });
+  };
+
   const goStats = useCallback(async (period?: string, date?: string) => {
     setLoading(true);
     setError("");
@@ -509,8 +529,10 @@ export function App() {
         onData={goData}
         onStats={() => goStats()}
         onFeeders={goFeeders}
+        onApiDocs={goApiDocs}
         onSettings={goSettings}
         showFeeders={appConfig.live_gap_fill}
+        showApiDocs={appConfig.public_api}
       />
 
       {/* Search belongs to Start and to the pages showing its results. */}
@@ -650,7 +672,14 @@ export function App() {
       {view.kind === "data" && <DataPage stats={stats} failedDates={failedDates} />}
 
       {view.kind === "feeders" &&
-        (appConfig.live_gap_fill ? <FeedersPage /> : <FeatureOffPage />)}
+        (appConfig.live_gap_fill
+          ? <FeedersPage />
+          : <FeatureOffPage title="Feeders" flag="ENABLE_LIVE_GAPFILL=true" />)}
+
+      {view.kind === "apiDocs" &&
+        (appConfig.public_api
+          ? <ApiDocsPage rateLimitPerMinute={appConfig.public_api_rate_limit_per_minute} />
+          : <FeatureOffPage title="API" flag="ENABLE_PUBLIC_API=true" />)}
 
       {view.kind === "settings" && (
         <SettingsPage
@@ -686,13 +715,14 @@ function Clock() {
   return <span class="utc-clock" title={timezoneTooltip()}>{now}</span>;
 }
 
-type NavKey = "start" | "data" | "stats" | "feeders" | "settings";
+type NavKey = "start" | "data" | "stats" | "feeders" | "apiDocs" | "settings";
 
 const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "start", label: "Start" },
   { key: "data", label: "Data" },
   { key: "stats", label: "Statistics" },
   { key: "feeders", label: "Feeders" },
+  { key: "apiDocs", label: "API" },
   { key: "settings", label: "Settings" },
 ];
 
@@ -702,30 +732,37 @@ function Nav({
   onData,
   onStats,
   onFeeders,
+  onApiDocs,
   onSettings,
   showFeeders,
+  showApiDocs,
 }: {
   current: View["kind"];
   onStart: () => void;
   onData: () => void;
   onStats: () => void;
   onFeeders: () => void;
+  onApiDocs: () => void;
   onSettings: () => void;
   showFeeders: boolean;
+  showApiDocs: boolean;
 }) {
   // Search result and aircraft views all live under Start.
   const active: NavKey =
     current === "stats" ? "stats"
     : current === "data" ? "data"
     : current === "feeders" ? "feeders"
+    : current === "apiDocs" ? "apiDocs"
     : current === "settings" ? "settings"
     : "start";
 
   const handlers: Record<NavKey, () => void> = {
-    start: onStart, data: onData, stats: onStats, feeders: onFeeders, settings: onSettings,
+    start: onStart, data: onData, stats: onStats, feeders: onFeeders, apiDocs: onApiDocs, settings: onSettings,
   };
 
-  const items = showFeeders ? NAV_ITEMS : NAV_ITEMS.filter(i => i.key !== "feeders");
+  const items = NAV_ITEMS.filter(
+    i => (i.key !== "feeders" || showFeeders) && (i.key !== "apiDocs" || showApiDocs)
+  );
 
   return (
     <nav class="main-nav" aria-label="Main">
@@ -1128,6 +1165,90 @@ function FeederRow({ feeder }: { feeder: Feeder }) {
           {formatTime(feeder.last_ok_at)}
         </span>
       )}
+    </div>
+  );
+}
+
+// Purely informational: who can get a key, what it's worth, and where the
+// full technical reference lives. There is no self-service signup, and no
+// key management here -- both are deliberately kept out of the UI, matching
+// how feeders are approved by hand rather than through an admin screen.
+function ApiDocsPage({ rateLimitPerMinute }: { rateLimitPerMinute?: number }) {
+  const mailto =
+    "mailto:skyhistory@andymail.net?subject=" +
+    encodeURIComponent("Sky History API access");
+
+  return (
+    <div class="page">
+      <h2>API</h2>
+      <p class="page-intro">
+        Read-only access to search and summary stats for scripts and other
+        services running outside the browser. Every request needs an API key;
+        there is no self-service signup.
+      </p>
+
+      <h3>What's available</h3>
+      <div class="failed-table-wrap">
+        <table class="failed-table">
+          <thead>
+            <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono">GET</td>
+              <td class="mono">/api/public/search</td>
+              <td>The same search as the Start page: by callsign, ICAO hex, registration or type.</td>
+            </tr>
+            <tr>
+              <td class="mono">GET</td>
+              <td class="mono">/api/public/stats</td>
+              <td>Totals and date range for what has been processed -- the same numbers shown on the Data page.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="page-intro">
+        Responses are identical to what this UI itself receives -- nothing is
+        trimmed or reshaped for external use. Parameters, headers and full
+        request/response detail are documented in the{" "}
+        <a
+          href="https://github.com/ap-andersson/sky-history#public-api"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          README on GitHub
+        </a>
+        .
+      </p>
+
+      <h3>Rate limits</h3>
+      <p class="page-intro">
+        {rateLimitPerMinute
+          ? `${rateLimitPerMinute} requests per minute per key`
+          : "A per-key limit"}, returning <span class="mono">429</span> once
+        exceeded. Every response carries{" "}
+        <span class="mono">X-RateLimit-Limit</span> and{" "}
+        <span class="mono">X-RateLimit-Remaining</span> headers, so a
+        well-behaved integration can watch it coming rather than guess. This
+        starts generous and may be lowered later if it needs to be.
+      </p>
+
+      <h3>Getting access</h3>
+      <p class="page-intro">
+        Email{" "}
+        <a href={mailto}>skyhistory@andymail.net</a> and include:
+      </p>
+      <div class="feeder-disclosure">
+        <ul>
+          <li>What you'd like to use it for</li>
+          <li>A name to label the key by</li>
+          <li>A contact email, in case the key ever needs to be reached about</li>
+        </ul>
+        <p>
+          Keys are issued by hand after a quick look at the request -- expect
+          a short delay, not an instant reply.
+        </p>
+      </div>
     </div>
   );
 }
@@ -1865,13 +1986,19 @@ function shiftDate(dateStr: string, days: number): string {
 }
 
 // Shown when a deep link reaches a feature this deployment has switched off.
-function FeatureOffPage() {
+function FeatureOffPage({
+  title,
+  flag,
+}: {
+  title: string;
+  flag: string;
+}) {
   return (
     <div class="page">
-      <h2>Feeders</h2>
+      <h2>{title}</h2>
       <p class="page-intro">
-        Live gap-fill is not enabled on this deployment. An administrator turns
-        it on by setting <code>ENABLE_LIVE_GAPFILL=true</code>.
+        This is not enabled on this deployment. An administrator turns it on
+        by setting <code>{flag}</code>.
       </p>
     </div>
   );
