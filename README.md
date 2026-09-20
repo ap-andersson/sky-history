@@ -708,7 +708,7 @@ recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ### Image tags
 
-Images are published to `ghcr.io/ap-andersson/sky-history-{api,processor,frontend}`:
+Images are published to `ghcr.io/ap-andersson/sky-history-{api,processor,collector,frontend}`:
 
 | Tag        | Moves when                    | Use for                                       |
 |------------|-------------------------------|-----------------------------------------------|
@@ -735,7 +735,7 @@ branch, use `edge`.
    git push origin vX.Y.Z
    ```
 
-The tag push builds and publishes all three images with semver tags, moves
+The tag push builds and publishes all four images with semver tags, moves
 `latest`, and creates a GitHub Release using that version's CHANGELOG section as
 the release notes. If no matching CHANGELOG entry exists, the workflow falls back
 to auto-generated notes.

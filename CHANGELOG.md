@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-20
+
 Live gap-fill: the days the archive has not published yet are searchable from
 crowdsourced ADS-B receivers.
 
@@ -76,6 +78,39 @@ crowdsourced ADS-B receivers.
   in the gap window counts towards nothing until a release confirms it. The
   week, month and year spans reach forward into the days the collector is still
   writing, so without this the numbers would move as the gap fills and unfills.
+
+### Upgrade notes
+
+**A new `collector` service must be added to your Compose file** — see the
+example in the README. Without it nothing changes; the rest of the stack works
+exactly as before.
+
+**The feature is off by default.** Set `ENABLE_LIVE_GAPFILL=true` on *both* the
+`api` and `collector` services to turn it on, and set `SUBMIT_IP_SALT` to a long
+random string on `api` so submission rate limits survive a restart. With the
+switch off, the feeder endpoints are never registered and nothing appears in the
+UI, so upgrading changes no behaviour.
+
+**Do not set `ALLOW_PRIVATE_FEEDERS=true` on a deployment whose UI is reachable
+from the internet.** It disables the check that stops a submitted URL pointing at
+your internal network. It exists for stacks whose feeders sit on the same Docker
+network.
+
+No `db/maintenance/` script this time. Migration 006 applies automatically on
+processor startup and includes a one-off `UPDATE` over every `aircraft` row to
+set the new `archive_seen` flag. That table is far smaller than `flights` —
+seconds to a minute or so, not hours — but it is a full rewrite of `aircraft`,
+so expect the processor's first start to pause before it begins polling.
+
+**Building from source now uses the repository root as the Docker context** for
+`processor`, `api` and `collector`, because they share the new `shared/` module:
+
+```bash
+docker build -f api/Dockerfile .          # not: docker build ./api
+```
+
+The `frontend` still builds from `./frontend`. Anyone pulling published images
+is unaffected.
 
 ## [1.3.0] - 2026-09-13
 
@@ -266,7 +301,8 @@ Initial state of the project prior to versioned releases: processor, API,
 frontend and PostgreSQL schema, deployed via Docker Compose with images built
 from `main`. Never formally tagged; recorded here for continuity.
 
-[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.4.0
 [1.3.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.3.0
 [1.2.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.2.0
 [1.1.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.1.0
