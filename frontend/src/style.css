@@ -1,15 +1,62 @@
+/* Dark is the default theme and needs no attribute -- it is what this app has
+   always looked like. Light is an explicit opt-in, applied via [data-theme]
+   on <html> (see App.tsx and the anti-flash script in index.html) rather than
+   prefers-color-scheme, so a visitor's system setting never silently changes
+   what they see; only their own choice in Settings does.
+
+   Every color below the base eight is a small set of derived tokens: an "-rgb"
+   companion for each status color, used wherever that color appears as a
+   translucent tint (rgba(var(--accent-rgb), 0.1) and similar) rather than as
+   solid text or a border. That is what lets the whole stylesheet re-theme from
+   these two blocks alone -- nothing past this point should need a literal hex
+   or rgba color of its own. */
 :root {
   --bg: #0f1117;
   --surface: #1a1d27;
   --border: #2a2d3a;
+  --border-rgb: 42, 45, 58;
   --text: #e4e6eb;
   --text-dim: #8b8fa3;
   --accent: #4f8ff7;
   --accent-hover: #6ba1f9;
+  --accent-rgb: 79, 143, 247;
   --success: #34d399;
+  --success-rgb: 52, 211, 153;
   --error: #f87171;
+  --error-rgb: 248, 113, 113;
+  --warning: #fbbf24;
+  --warning-rgb: 251, 191, 36;
+  --hover-overlay: rgba(255, 255, 255, 0.04);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color-scheme: dark;
+}
+
+/* Cool light grey-blue rather than plain white, so the page keeps the same
+   navy-tinted identity as the dark theme instead of becoming a generic light
+   dashboard. Every color here was checked against the surface (or page
+   background, whichever it more often sits on) for at least WCAG AA text
+   contrast (4.5:1), which is why the accent, success, error and warning tones
+   are all a shade darker than their dark-mode counterparts -- the same hues
+   read as bright highlights on black but need more weight to stay legible on
+   a light background. */
+:root[data-theme="light"] {
+  --bg: #eef1f6;
+  --surface: #ffffff;
+  --border: #d7dbe4;
+  --border-rgb: 215, 219, 228;
+  --text: #161a22;
+  --text-dim: #5b6072;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-rgb: 37, 99, 235;
+  --success: #047857;
+  --success-rgb: 4, 120, 87;
+  --error: #b91c1c;
+  --error-rgb: 185, 28, 28;
+  --warning: #92400e;
+  --warning-rgb: 146, 64, 14;
+  --hover-overlay: rgba(15, 17, 23, 0.045);
+  color-scheme: light;
 }
 
 * {
@@ -68,10 +115,23 @@ a:hover {
 
 .header h1 {
   margin: 0;
+  font-family: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-size: 1.7rem;
+  /* Space Grotesk's line box carries more room below the baseline than above
+     the cap-height, so align-items: center on .header-left was centering that
+     box, not the glyphs -- the text read as sitting high next to the mark.
+     A tight line-height brings the box back down near the visible ink. */
+  line-height: 1;
 }
 
-.header .plane-icon {
-  font-size: 1.8rem;
+/* Swapped between brand-mark-for-dark.png and brand-mark-for-light.png in
+   App.tsx as resolvedTheme changes -- a raster asset, not CSS-themeable, so
+   the two files carry their own matching foreground color already baked in. */
+.brand-mark {
+  flex-shrink: 0;
+  display: block;
 }
 
 .utc-clock {
@@ -155,9 +215,9 @@ a:hover {
 
 .failed-dates-btn {
   background: none;
-  border: 1px solid rgba(251, 191, 36, 0.4);
+  border: 1px solid rgba(var(--warning-rgb), 0.4);
   border-radius: 4px;
-  color: #fbbf24;
+  color: var(--warning);
   font-size: 0.8rem;
   padding: 0.2rem 0.5rem;
   cursor: pointer;
@@ -167,8 +227,8 @@ a:hover {
 
 .failed-dates-btn:hover,
 .failed-dates-btn.active {
-  background: rgba(251, 191, 36, 0.15);
-  border-color: #fbbf24;
+  background: rgba(var(--warning-rgb), 0.15);
+  border-color: var(--warning);
 }
 
 .card {
@@ -210,15 +270,15 @@ a:hover {
 
 .external-links a {
   padding: 0.25rem 0.6rem;
-  background: rgba(79, 143, 247, 0.1);
-  border: 1px solid rgba(79, 143, 247, 0.3);
+  background: rgba(var(--accent-rgb), 0.1);
+  border: 1px solid rgba(var(--accent-rgb), 0.3);
   border-radius: 4px;
   font-size: 0.8rem;
   transition: background 0.2s;
 }
 
 .external-links a:hover {
-  background: rgba(79, 143, 247, 0.2);
+  background: rgba(var(--accent-rgb), 0.2);
   text-decoration: none;
 }
 
@@ -241,11 +301,11 @@ th {
 
 td {
   padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid rgba(42, 45, 58, 0.5);
+  border-bottom: 1px solid rgba(var(--border-rgb), 0.5);
 }
 
 tr:hover td {
-  background: rgba(79, 143, 247, 0.05);
+  background: rgba(var(--accent-rgb), 0.05);
 }
 
 .mono {
@@ -288,14 +348,14 @@ tr:hover td {
   text-align: center;
   padding: 1rem;
   color: var(--error);
-  background: rgba(248, 113, 113, 0.1);
+  background: rgba(var(--error-rgb), 0.1);
   border-radius: 6px;
   margin-bottom: 1rem;
 }
 
 .failed-dates-banner {
-  background: rgba(251, 191, 36, 0.1);
-  border: 1px solid rgba(251, 191, 36, 0.3);
+  background: rgba(var(--warning-rgb), 0.1);
+  border: 1px solid rgba(var(--warning-rgb), 0.3);
   border-radius: 0 0 6px 6px;
   padding: 0.75rem 1rem;
   margin-top: 0;
@@ -307,7 +367,7 @@ tr:hover td {
 }
 
 .failed-dates-header {
-  color: #fbbf24;
+  color: var(--warning);
   font-weight: 600;
   margin-bottom: 0.5rem;
 }
@@ -326,7 +386,7 @@ tr:hover td {
 }
 
 .failed-date {
-  color: var(--text-main);
+  color: var(--text);
   font-weight: 500;
   white-space: nowrap;
 }
@@ -346,7 +406,7 @@ tr:hover td {
 .result-type {
   display: inline-block;
   padding: 0.15rem 0.5rem;
-  background: rgba(79, 143, 247, 0.15);
+  background: rgba(var(--accent-rgb), 0.15);
   border-radius: 3px;
   font-size: 0.75rem;
   color: var(--accent);
@@ -444,8 +504,8 @@ tr:hover td {
 
 .filter-tag {
   padding: 0.15rem 0.5rem;
-  background: rgba(52, 211, 153, 0.12);
-  border: 1px solid rgba(52, 211, 153, 0.3);
+  background: rgba(var(--success-rgb), 0.12);
+  border: 1px solid rgba(var(--success-rgb), 0.3);
   border-radius: 3px;
   font-size: 0.75rem;
   color: var(--success);
@@ -685,7 +745,7 @@ tr:hover td {
 
 .view-all-btn:hover {
   border-color: var(--accent);
-  background: rgba(79, 143, 247, 0.1);
+  background: rgba(var(--accent-rgb), 0.1);
 }
 
 
@@ -696,13 +756,43 @@ tr:hover td {
    the title and the content. */
 .main-nav {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.4rem;
   margin-bottom: 1.5rem;
+}
+
+.main-nav-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+/* An external link, not a page tab, so it gets its own icon-only treatment
+   pinned to the far side of the bar rather than joining the button row. */
+.main-nav-github {
+  display: flex;
+  align-items: center;
+  color: var(--text-dim);
+  padding: 0.5rem;
+  border-radius: 4px;
+  flex-shrink: 0;
+  line-height: 0;
+}
+
+.main-nav-github:hover {
+  color: var(--text);
+  background: var(--hover-overlay);
+  text-decoration: none;
+}
+
+.main-nav-github:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* Sized to the same scale as inputs and buttons: 1rem text on 0.6rem padding. */
@@ -719,12 +809,12 @@ tr:hover td {
 
 .nav-btn:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--hover-overlay);
 }
 
 .nav-btn.active {
   color: var(--accent);
-  background: rgba(79, 143, 247, 0.14);
+  background: rgba(var(--accent-rgb), 0.14);
   font-weight: 600;
 }
 
@@ -889,10 +979,14 @@ tr:hover td {
   font-size: 0.8rem;
 }
 
+/* Lives inside the Date format fieldset, right after its options -- so it
+   stays visibly attached to the setting it previews regardless of what other
+   fieldsets (like Live gap-fill) come and go around it. */
 .setting-preview {
   display: flex;
   align-items: baseline;
   gap: 0.6rem;
+  margin-top: 0.75rem;
   padding: 0.75rem 1rem;
   border: 1px dashed var(--border);
   border-radius: 8px;
@@ -1038,8 +1132,49 @@ tr:hover td {
   color: var(--text-dim);
 }
 
+/* Same weight as the main search box: this is the primary action on the page,
+   not a secondary filter field, so it should not read as an afterthought next
+   to it. Unstyled before this, these fell back to the browser's bare default
+   input and button, which is why they looked thin next to the rest of the UI. */
+.feeder-form input {
+  padding: 0.6rem 1rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 1rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.feeder-form input:focus {
+  border-color: var(--accent);
+}
+
+.feeder-form input::placeholder {
+  color: var(--text-dim);
+}
+
 .feeder-form button {
   align-self: flex-start;
+  padding: 0.6rem 1.2rem;
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  color: white;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.feeder-form button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.feeder-form button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* The submitter is told exactly what the submission records, so it sits with

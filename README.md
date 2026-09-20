@@ -1,6 +1,14 @@
-# Sky-History
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-for-dark-mode.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/logo-for-light-mode.png">
+    <img alt="Sky History" src="docs/logo-for-dark-mode.png" width="220">
+  </picture>
+</p>
 
-> **Attribution:** This project was designed and implemented with the assistance of **Claude** (Anthropic), an AI programming assistant, via GitHub Copilot in VS Code.
+<h1 align="center">Sky-History</h1>
+
+> **Attribution:** This project was designed and implemented with the assistance of **Claude** (Anthropic), an AI programming assistant.
 
 Sky-History is a self-hosted application that automatically downloads daily ADS-B flight data from the [adsblol/globe_history_2026](https://github.com/adsblol/globe_history_2026) GitHub releases, parses [readsb](https://github.com/wiedehopf/readsb) trace JSON files, and stores flight summaries in PostgreSQL. It provides a REST API and a browser-based search UI to explore aircraft and flight history.
 
@@ -281,10 +289,16 @@ not synchronised between devices.
 
 | Setting     | Options                                                              | Default   |
 |-------------|----------------------------------------------------------------------|-----------|
+| Appearance  | Dark, Light, Match system                                             | Dark      |
 | Time zone   | UTC, or the browser's own zone                                        | UTC       |
 | Clock       | 24-hour, 12-hour                                                      | 24-hour   |
 | Date format | `2026-02-14`, `14/02/2026`, `14.02.2026`, `02/14/2026`                | ISO       |
 | Live gap-fill | Include the collector's live rows in searches                       | Off       |
+
+Dark is the default so an existing deployment looks exactly the same after
+upgrading; Light and Match system are opt-in. Match system follows the
+browser's own `prefers-color-scheme` and updates live if it changes while the
+tab is open, without needing a reload.
 
 The Live gap-fill setting only appears when the deployment has
 `ENABLE_LIVE_GAPFILL=true`.

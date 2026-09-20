@@ -1,8 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
+import brandMarkForDark from "./assets/brand-mark-for-dark.png";
+import brandMarkForLight from "./assets/brand-mark-for-light.png";
 import {
   DATE_FORMAT_OPTIONS,
+  applyTheme,
   getSettings,
   loadSettings,
+  resolveTheme,
   saveSettings,
   timezoneTooltip,
   type Settings,
@@ -142,6 +146,32 @@ export function App() {
   // Display preferences, persisted in this browser
   const [settings, setSettingsState] = useState<Settings>(() => loadSettings());
   const applySettings = (next: Settings) => setSettingsState(saveSettings(next));
+
+  // The resolved (never "auto") theme, tracked as state -- rather than just
+  // read from settings.theme -- because the header mark is a raster image
+  // (see brand-mark-for-dark/light.png) and has to pick a file, not just a
+  // CSS variable. "auto" needs this reactive: the OS can flip light/dark
+  // under an already-open tab without settings.theme itself ever changing.
+  const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">(() =>
+    resolveTheme(settings.theme)
+  );
+
+  // Keeps the page's [data-theme] in sync with the theme setting. Re-runs
+  // whenever the setting changes, and while it is "auto" also listens for the
+  // browser's own light/dark switch (e.g. the OS changing at sunset) so an
+  // already-open tab follows along without needing a reload.
+  useEffect(() => {
+    const apply = (resolved: "dark" | "light") => {
+      setResolvedTheme(resolved);
+      applyTheme(resolved);
+    };
+    apply(resolveTheme(settings.theme));
+    if (settings.theme !== "auto") return;
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const onChange = () => apply(resolveTheme("auto"));
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [settings.theme]);
 
   // Advanced search fields
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -460,7 +490,13 @@ export function App() {
     <div>
       <div class="header" onClick={goHome} style={{ cursor: "pointer" }}>
         <div class="header-left">
-          <span class="plane-icon">✈</span>
+          <img
+            class="brand-mark"
+            src={resolvedTheme === "light" ? brandMarkForLight : brandMarkForDark}
+            alt=""
+            width="60"
+            height="42"
+          />
           <h1>Sky History</h1>
         </div>
         <Clock />
@@ -692,17 +728,31 @@ function Nav({
 
   return (
     <nav class="main-nav" aria-label="Main">
-      {items.map(item => (
-        <button
-          key={item.key}
-          type="button"
-          class={active === item.key ? "nav-btn active" : "nav-btn"}
-          aria-current={active === item.key ? "page" : undefined}
-          onClick={handlers[item.key]}
-        >
-          {item.label}
-        </button>
-      ))}
+      <div class="main-nav-items">
+        {items.map(item => (
+          <button
+            key={item.key}
+            type="button"
+            class={active === item.key ? "nav-btn active" : "nav-btn"}
+            aria-current={active === item.key ? "page" : undefined}
+            onClick={handlers[item.key]}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <a
+        class="main-nav-github"
+        href="https://github.com/ap-andersson/sky-history"
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="View source on GitHub"
+        title="View source on GitHub"
+      >
+        <svg viewBox="0 0 16 16" width="20" height="20" fill="currentColor" aria-hidden="true">
+          <path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z" />
+        </svg>
+      </a>
     </nav>
   );
 }
@@ -741,6 +791,18 @@ function DataPage({ stats, failedDates }: { stats: Stats | null; failedDates: Fa
       ) : (
         <p class="muted">Loading…</p>
       )}
+
+      <h3>Source</h3>
+      <p class="page-intro">
+        Flight data comes from{" "}
+        <a href="https://github.com/adsblol/globe_history_2026" target="_blank" rel="noopener noreferrer">
+          adsblol/globe_history_2026
+        </a>
+        , a project that archives global ADS-B data collected by the{" "}
+        <a href="https://adsb.lol" target="_blank" rel="noopener noreferrer">adsb.lol</a>{" "}
+        network. It publishes a new day's dump on GitHub once that day is complete,
+        which sets the pace for what shows up here.
+      </p>
 
       <h3>Processing errors</h3>
       {failedDates.length === 0 ? (
@@ -795,6 +857,27 @@ function SettingsPage({
       </p>
 
       <fieldset class="setting">
+        <legend>Appearance</legend>
+        <div class="setting-options">
+          <label class="setting-option">
+            <input type="radio" name="theme" checked={settings.theme === "dark"}
+              onChange={() => onChange({ ...settings, theme: "dark" })} />
+            <span>Dark</span>
+          </label>
+          <label class="setting-option">
+            <input type="radio" name="theme" checked={settings.theme === "light"}
+              onChange={() => onChange({ ...settings, theme: "light" })} />
+            <span>Light</span>
+          </label>
+          <label class="setting-option">
+            <input type="radio" name="theme" checked={settings.theme === "auto"}
+              onChange={() => onChange({ ...settings, theme: "auto" })} />
+            <span>Match system</span>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset class="setting">
         <legend>Time zone</legend>
         <p class="setting-help">
           Flight times are recorded in UTC. Showing them in your own zone shifts
@@ -842,6 +925,12 @@ function SettingsPage({
             </label>
           ))}
         </div>
+        <div class="setting-preview">
+          <span class="data-label">Preview</span>
+          <span class="mono" title={timezoneTooltip()}>
+            {formatDate("2026-02-14")} {formatTime(sample)}
+          </span>
+        </div>
       </fieldset>
 
       {showLiveGapFill && (
@@ -869,13 +958,6 @@ function SettingsPage({
         </div>
       </fieldset>
       )}
-
-      <div class="setting-preview">
-        <span class="data-label">Preview</span>
-        <span class="mono" title={timezoneTooltip()}>
-          {formatDate("2026-02-14")} {formatTime(sample)}
-        </span>
-      </div>
     </div>
   );
 }

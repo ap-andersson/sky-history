@@ -8,8 +8,10 @@
 export type Timezone = "utc" | "browser";
 export type TimeFormat = "24" | "12";
 export type DateFormat = "iso" | "dmy" | "mdy" | "dmy-dot";
+export type Theme = "dark" | "light" | "auto";
 
 export type Settings = {
+  theme: Theme;
   timezone: Timezone;
   timeFormat: TimeFormat;
   dateFormat: DateFormat;
@@ -21,6 +23,9 @@ export type Settings = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
+  // Dark is what this app has always looked like; a first-time visitor's
+  // experience does not change until they choose otherwise.
+  theme: "dark",
   timezone: "utc",
   timeFormat: "24",
   dateFormat: "iso",
@@ -53,6 +58,7 @@ export function loadSettings(): Settings {
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<Settings>;
       current = {
+        theme: parsed.theme === "light" || parsed.theme === "auto" ? parsed.theme : "dark",
         timezone: parsed.timezone === "browser" ? "browser" : "utc",
         timeFormat: parsed.timeFormat === "12" ? "12" : "24",
         dateFormat: ["iso", "dmy", "mdy", "dmy-dot"].includes(parsed.dateFormat as string)
@@ -76,6 +82,43 @@ export function saveSettings(next: Settings): Settings {
     // Not persisting is survivable; the setting still applies for this session.
   }
   return current;
+}
+
+/**
+ * Resolves "auto" against the browser's current color-scheme preference.
+ * "dark" and "light" pass straight through.
+ */
+export function resolveTheme(theme: Theme): "dark" | "light" {
+  if (theme !== "auto") return theme;
+  try {
+    return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
+/**
+ * Applies a resolved theme to the document: the [data-theme] attribute the
+ * stylesheet keys off, and the browser-chrome color on mobile. Dark needs no
+ * attribute -- it is what :root already renders -- so only light sets one.
+ *
+ * The same two steps run, on the same "sky-history-settings" key, in the
+ * inline script in index.html, so a saved light or auto-resolved-to-light
+ * preference does not flash dark before this module loads. Keep both in sync.
+ */
+export function applyTheme(resolved: "dark" | "light"): void {
+  if (resolved === "light") {
+    document.documentElement.dataset.theme = "light";
+  } else {
+    delete document.documentElement.dataset.theme;
+  }
+  try {
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", resolved === "light" ? "#eef1f6" : "#0f1117");
+  } catch {
+    // Cosmetic only; not worth failing over.
+  }
 }
 
 /** The IANA zone name for the browser, e.g. "Europe/Stockholm". */

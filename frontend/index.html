@@ -4,7 +4,45 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Sky History</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈</text></svg>" />
+    <!-- Same artwork as the header's .brand-mark (src/assets/brand-mark-for-*.png).
+         A favicon renders outside the page DOM, so it can't read our in-app
+         theme setting -- it can only follow the OS/browser's own preference,
+         which is what these two media-qualified icons do. A visitor who
+         overrides the in-app theme against their OS will see a tab icon that
+         doesn't quite match; accepted as a minor, favicon-only inconsistency. -->
+    <link rel="icon" type="image/png" href="/favicon-dark.png" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/png" href="/favicon-light.png" media="(prefers-color-scheme: light)" />
+    <!-- Sky History's wordmark uses Space Grotesk -- an engineered, instrument-panel
+         character that suits a flight-data tool, distinct from the system sans used
+         everywhere else. Loaded for the header only; body text is untouched. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
+    <meta name="theme-color" content="#0f1117" />
+    <!--
+      Applies a saved light (or auto-resolved-to-light) theme before the page
+      paints, so a returning visitor does not see a flash of dark first. Reads
+      the same localStorage key as settings.ts (STORAGE_KEY) and mirrors its
+      resolveTheme()/applyTheme() -- keep the two in sync. Dark needs no such
+      script: it is what :root already renders with no attribute set.
+    -->
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem("sky-history-settings");
+          var theme = raw ? JSON.parse(raw).theme : null;
+          var light =
+            theme === "light" ||
+            (theme === "auto" && window.matchMedia("(prefers-color-scheme: light)").matches);
+          if (light) {
+            document.documentElement.dataset.theme = "light";
+            document.querySelector('meta[name="theme-color"]').setAttribute("content", "#eef1f6");
+          }
+        } catch (e) {
+          // Private browsing or blocked storage: fall back to dark.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-20
+
+A light theme, and a real logo in place of the ✈ placeholder.
+
+### Added
+
+- **Appearance setting**: Dark, Light, or Match system, under **Settings**.
+  Dark stays the default, so an existing deployment looks unchanged after
+  upgrading. Every color in `style.css` runs through a small set of CSS
+  variables (`--bg`, `--surface`, `--accent`, `--accent-rgb`, and so on), so
+  the light palette is a second token block rather than a parallel stylesheet.
+  Match system tracks `prefers-color-scheme` live via a media-query listener,
+  so an already-open tab follows the OS without a reload. A synchronous script
+  in `index.html` applies a saved Light (or auto-resolved-to-light) preference
+  before first paint, so returning visitors never see a flash of dark first.
+- **A real logo**, replacing the ✈ emoji: a cloud, a jet banking out of it, and
+  a trend line woven through, extracted from reference artwork the user
+  supplied. Alpha-matted out of two flat-color renders (not redrawn), so the
+  cutout trend-line detail came through as true transparency. Two files —
+  `brand-mark-for-dark.png` and `brand-mark-for-light.png` — swap in the header
+  as the resolved theme changes, and the same pair drives the favicon via
+  `media="(prefers-color-scheme: …)"` `<link rel="icon">` tags (a favicon
+  renders outside the page DOM, so it can only follow the OS preference, not
+  the in-app override). The header wordmark now sets in Space Grotesk instead
+  of the system font; body text is untouched.
+- **The same logo at the top of the README**, via the `<picture>` +
+  `prefers-color-scheme` pattern GitHub renders natively, so it matches
+  whichever theme the viewer reads GitHub in. Assets live under `docs/`.
+- **A GitHub icon** on the right of the main nav, linking to the repository.
+- **A Source note on the Data page**, crediting `adsblol/globe_history_2026`
+  and the adsb.lol network with links, next to the existing "what has been
+  downloaded" summary.
+
+### Changed
+
+- The Feeders page's submit form (`aircraft.json` URL, name, contact, submit
+  button) is actually styled now. It had no CSS of its own, so it was falling
+  back to the bare browser default input and button next to a page that styles
+  everything else — the search box it sits below now sets the bar it matches.
+- The Settings page's date/time preview moved inside the **Date format**
+  fieldset it previews, rather than sitting after every fieldset as a separate
+  box. It had drifted visibly away from Date format once **Appearance** and
+  **Live gap-fill** started landing between them; nesting it means it stays
+  attached to what it explains no matter what else gets added around it.
+
 ## [1.4.0] - 2026-09-20
 
 Live gap-fill: the days the archive has not published yet are searchable from
@@ -301,7 +346,8 @@ Initial state of the project prior to versioned releases: processor, API,
 frontend and PostgreSQL schema, deployed via Docker Compose with images built
 from `main`. Never formally tagged; recorded here for continuity.
 
-[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.5.0
 [1.4.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.4.0
 [1.3.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.3.0
 [1.2.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.2.0
