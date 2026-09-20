@@ -4,7 +4,7 @@
 # this service depends on the sibling shared/ module through a relative replace
 # directive. Build with:
 #
-#   docker build -f api/Dockerfile .
+#   docker build -f collector/Dockerfile .
 #
 # See shared/README.md.
 FROM golang:1.26-alpine AS build
@@ -18,13 +18,13 @@ COPY shared/ ./shared/
 
 # Cache dependencies. The replace directive resolves to /src/shared, which is
 # the same relative path as on disk.
-COPY api/go.mod api/go.sum ./api/
-WORKDIR /src/api
+COPY collector/go.mod collector/go.sum ./collector/
+WORKDIR /src/collector
 RUN go mod download
 
 # Build
-COPY api/ ./
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /api .
+COPY collector/ ./
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /collector .
 
 # Runtime stage
 FROM alpine:3.23
@@ -32,6 +32,6 @@ FROM alpine:3.23
 RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
-COPY --from=build /api /app/api
+COPY --from=build /collector /app/collector
 
-ENTRYPOINT ["/app/api"]
+ENTRYPOINT ["/app/collector"]

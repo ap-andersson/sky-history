@@ -6,25 +6,35 @@ Sky-History is a self-hosted application that automatically downloads daily ADS-
 
 The goal is **not** to store every data point — it extracts and stores only the summary of each flight segment (ICAO, callsign, date, first/last seen times).
 
-How up to date the data is depends entirely on what data has been published on github. No live colleting of data from recievers possible now.
+How up to date the archive is depends entirely on what has been published on
+GitHub, which leaves the most recent day or two unsearchable. The **collector**
+fills that gap from live ADS-B receivers — see
+[Live gap-fill](#live-gap-fill).
 
 ---
 
 ## Architecture
 
-Sky-History consists of four Docker containers:
+Sky-History consists of five Docker containers:
 
 | Service       | Description                                                                 |
 |---------------|-----------------------------------------------------------------------------|
 | **db**        | PostgreSQL 16 (Alpine) — stores aircraft, flights, and processing metadata  |
 | **processor** | Go service — polls GitHub releases, downloads tarballs, parses traces       |
 | **api**       | Go service — REST API serving flight/aircraft data from the database        |
+| **collector** | Go service — polls approved feeders for live data covering the archive gap  |
 | **frontend**  | Preact + Vite SPA served by nginx, which also reverse-proxies `/api/*`      |
 
 ```
-GitHub Releases ──► Processor ──► PostgreSQL ◄── API ◄── nginx ◄── Browser
-  (adsblol)          (Go)          (pgx/v5)      (Go)    (proxy)    (Preact)
+GitHub Releases ──► Processor ──┐
+  (adsblol)          (Go)       │
+                                ├─► PostgreSQL ◄── API ◄── nginx ◄── Browser
+ADS-B feeders ────► Collector ──┘    (pgx/v5)      (Go)    (proxy)    (Preact)
+ (aircraft.json)      (Go)
 ```
+
+The processor supplies the searchable history; the collector covers the gap
+between the last published release and now.
 
 ### Data Flow
 
@@ -33,7 +43,10 @@ GitHub Releases ──► Processor ──► PostgreSQL ◄── API ◄──
 3. Trace JSON files (gzip-compressed, one per aircraft) are parsed concurrently.
 4. Flight summaries (ICAO, callsign, date, first/last seen) are batch-inserted into PostgreSQL.
 5. **API** serves the data via RESTful endpoints.
-6. **Frontend** provides a dark-themed UI with four sections: **Start** (quick search or multi-filter search, and per-aircraft date-scoped detail pages), **Data** (what has been processed, and any releases that failed to parse), **Statistics**, and **Settings**.
+6. **Collector** polls approved feeders and writes provisional rows for the
+   window the archive has not reached yet; the processor replaces them when the
+   matching release lands.
+7. **Frontend** provides a dark-themed UI with five sections: **Start** (quick search or multi-filter search, and per-aircraft date-scoped detail pages), **Data** (what has been processed, and any releases that failed to parse), **Statistics**, **Feeders** (the live gap-fill roster and submit form), and **Settings**.
 
 ---
 
@@ -41,7 +54,7 @@ GitHub Releases ──► Processor ──► PostgreSQL ◄── API ◄──
 
 1. Handle API request from outside the stack (requires auth etc)
 2. Maybe add some more flight info?
-3. Maybe integrate into tar1090 in some way?
+3. An approval UI, so feeders do not have to be enabled with psql
 
 
 ---
@@ -140,10 +153,11 @@ services:
 
   processor:
     image: ghcr.io/ap-andersson/sky-history-processor:latest
-    # Or build locally:
+    # Or build locally. The context is the repository root, not ./processor:
+    # the service depends on the sibling shared/ module (see shared/README.md).
     # build:
-    #   context: ./processor
-    #   dockerfile: Dockerfile
+    #   context: .
+    #   dockerfile: processor/Dockerfile
     restart: unless-stopped
     container_name: skyhistory-processor
     depends_on:
@@ -163,10 +177,11 @@ services:
 
   api:
     image: ghcr.io/ap-andersson/sky-history-api:latest
-    # Or build locally:
+    # Or build locally. The context is the repository root, not ./api: the
+    # service depends on the sibling shared/ module (see shared/README.md).
     # build:
-    #   context: ./api
-    #   dockerfile: Dockerfile
+    #   context: .
+    #   dockerfile: api/Dockerfile
     restart: unless-stopped
     container_name: skyhistory-api
     depends_on:
@@ -176,6 +191,31 @@ services:
       DATABASE_URL: postgres://skyhistory:${POSTGRES_PASSWORD:-skyhistory}@db:5432/skyhistory?sslmode=disable
       ULTRAFEEDER_URLS: ${ULTRAFEEDER_URLS:-}
       LISTEN_ADDR: ":8081"
+      ENABLE_LIVE_GAPFILL: ${ENABLE_LIVE_GAPFILL:-false}
+      SUBMIT_IP_SALT: ${SUBMIT_IP_SALT:-}
+      ALLOW_PRIVATE_FEEDERS: ${ALLOW_PRIVATE_FEEDERS:-false}
+    networks:
+      - skyhistory
+
+  collector:
+    image: ghcr.io/ap-andersson/sky-history-collector:latest
+    # Or build locally. The context is the repository root, not ./collector --
+    # see shared/README.md.
+    # build:
+    #   context: .
+    #   dockerfile: collector/Dockerfile
+    restart: unless-stopped
+    container_name: skyhistory-collector
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://skyhistory:${POSTGRES_PASSWORD:-skyhistory}@db:5432/skyhistory?sslmode=disable
+      ENABLE_LIVE_GAPFILL: ${ENABLE_LIVE_GAPFILL:-false}
+      COLLECTOR_POLL_INTERVAL: ${COLLECTOR_POLL_INTERVAL:-5s}
+      COLLECTOR_SEGMENT_GAP: ${COLLECTOR_SEGMENT_GAP:-15m}
+      COLLECTOR_FLUSH_INTERVAL: ${COLLECTOR_FLUSH_INTERVAL:-30s}
+      ALLOW_PRIVATE_FEEDERS: ${ALLOW_PRIVATE_FEEDERS:-false}
     networks:
       - skyhistory
 
@@ -221,6 +261,15 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `KEEP_DOWNLOADS`   | `false`                              | Set to `true` to cache extracted files on disk (useful during development to avoid re-downloads). |
 | `ULTRAFEEDER_URLS` | *(empty)*                            | Comma-separated base URLs for tar1090/ultrafeeder instances. Adds "View Live" links in the UI.   |
 | `FRONTEND_PORT`    | `8080`                               | Host port the frontend is exposed on.                                                            |
+| `ENABLE_LIVE_GAPFILL` | `false`                           | **Master switch for live gap-fill.** Off by default: no polling, no feeder endpoints, no Feeders page. Set on both `api` and `collector`. |
+| `COLLECTOR_POLL_INTERVAL` | `5s`                          | How often the collector polls each approved feeder.                                              |
+| `COLLECTOR_SEGMENT_GAP` | `15m`                           | How long an aircraft may go unseen before its live flight segment is closed.                     |
+| `COLLECTOR_FLUSH_INTERVAL` | `30s`                        | How often live segments are written to the database.                                             |
+| `COLLECTOR_FEEDER_RELOAD` | `1m`                          | How often the enabled-feeder list is re-read, so approvals take effect without a restart.        |
+| `COLLECTOR_FETCH_TIMEOUT` | `15s`                         | Per-request timeout when polling a feeder.                                                       |
+| `FEEDER_PROBE_TIMEOUT` | `10s`                            | Timeout when checking a newly submitted feeder.                                                  |
+| `SUBMIT_IP_SALT`   | *(random per restart)*               | Secret keying the hash of a submitter's IP, used only for rate limiting. See [Live gap-fill](#live-gap-fill). |
+| `ALLOW_PRIVATE_FEEDERS` | `false`                         | Allow feeder URLs on private/loopback addresses. **Unsafe on a public deployment** — see [Live gap-fill](#live-gap-fill). |
 
 ---
 
@@ -235,6 +284,10 @@ not synchronised between devices.
 | Time zone   | UTC, or the browser's own zone                                        | UTC       |
 | Clock       | 24-hour, 12-hour                                                      | 24-hour   |
 | Date format | `2026-02-14`, `14/02/2026`, `14.02.2026`, `02/14/2026`                | ISO       |
+| Live gap-fill | Include the collector's live rows in searches                       | Off       |
+
+The Live gap-fill setting only appears when the deployment has
+`ENABLE_LIVE_GAPFILL=true`.
 
 The time zone setting shifts **instants only** — the first and last time an
 aircraft was seen. A flight keeps the UTC day its release belongs to, because
@@ -243,8 +296,9 @@ shifting it would file a flight under a day that disagrees with the dataset it
 came from. The zone in use is shown as a tooltip on times rather than printed in
 tables.
 
-All of this is presentation. Times are stored and queried in UTC regardless of
-what is selected here.
+All of this is presentation except **Live gap-fill**, which widens what a
+search asks the API for — see [Live gap-fill](#live-gap-fill). Times are stored
+and queried in UTC regardless of what is selected here.
 
 ---
 
@@ -259,13 +313,26 @@ All endpoints return JSON and are accessible under `/api/`.
 | GET    | `/api/health` | Health check (`{"status":"ok"}`) |
 | GET    | `/api/stats`  | Processing statistics (total aircraft, flights, releases, oldest/newest date range) |
 | GET    | `/api/failed-dates` | Dates that permanently failed processing (corrupt tarballs, etc.) |
+| GET    | `/api/config` | Which optional features are enabled (`{"live_gap_fill": false}`) |
 
 ### Search
 
 | Method | Path                    | Parameters                                                             | Description                          |
 |--------|-------------------------|------------------------------------------------------------------------|--------------------------------------|
-| GET    | `/api/search`           | `q` (required), `limit`, `offset`                                      | Quick search by ICAO, callsign, registration, or aircraft type (case-insensitive) |
-| GET    | `/api/search/advanced`  | `icao`, `callsign`, `type_code`, `date`, `date_from`, `date_to`, `limit`, `offset`  | Advanced search with combinable filters |
+| GET    | `/api/search`           | `q` (required), `limit`, `offset`, `include_live`                      | Quick search by ICAO, callsign, registration, or aircraft type (case-insensitive) |
+| GET    | `/api/search/advanced`  | `icao`, `callsign`, `type_code`, `date`, `date_from`, `date_to`, `limit`, `offset`, `include_live`  | Advanced search with combinable filters |
+
+`include_live=true` adds the collector's live rows, which are excluded by
+default. Every flight carries a `source` of `archive` or `live`.
+
+### Feeders
+
+Registered only when `ENABLE_LIVE_GAPFILL=true`; otherwise they return 404.
+
+| Method | Path            | Description                                                           |
+|--------|-----------------|-----------------------------------------------------------------------|
+| GET    | `/api/feeders`  | Public feeder roster: name, status and last successful poll. URLs are never returned. |
+| POST   | `/api/feeders`  | Submit a feeder (`{url, name, contact?}`). Validated immediately, then awaits approval. |
 
 ### Aircraft & Flights
 
@@ -282,13 +349,14 @@ All endpoints return JSON and are accessible under `/api/`.
 
 ## Database Schema
 
-Five tables are created automatically on startup:
+Six tables are created automatically on startup:
 
-- **`aircraft`** — ICAO (primary key), registration, type code, description, aircraft_type_id FK
+- **`aircraft`** — ICAO (primary key), registration, type code, description, aircraft_type_id FK, `archive_seen` (whether a release has confirmed it; statistics count only these)
 - **`aircraft_types`** — Lookup table of unique aircraft types (type code + description)
-- **`flights`** — ICAO, callsign, date, first/last seen timestamps, aircraft_type_id (unique on icao+callsign+date+first_seen)
+- **`flights`** — ICAO, callsign, date, first/last seen timestamps, aircraft_type_id, `source` (`archive`/`live`) and `feeder_id` (unique on icao+callsign+date+first_seen)
 - **`processed_releases`** — Tracks which GitHub release tags have been processed
 - **`failed_releases`** — Tracks releases that failed processing (with attempt count and permanent flag)
+- **`feeders`** — Submitted ADS-B receivers, their validation result and polling health. `enabled` is the manual approval switch
 
 Three further tables hold pre-aggregated statistics, maintained by the processor
 after each successful release (see [Statistics rollups](#statistics-rollups)):
@@ -301,6 +369,126 @@ Migrations in `processor/db/migrations/` run automatically on processor startup
 and are tracked in a `schema_migrations` table. Index changes that require
 `CREATE INDEX CONCURRENTLY` live in `db/maintenance/` and are applied manually —
 see [Database Performance](#database-performance).
+
+---
+
+## Live gap-fill
+
+**Off by default.** Set `ENABLE_LIVE_GAPFILL=true` on both the `api` and
+`collector` services to turn it on. Until then the collector polls nothing, the
+feeder endpoints are not registered, `include_live` is ignored, and neither the
+Feeders page nor its setting appears in the UI — so updating an existing
+deployment never starts accepting submissions from the public by surprise.
+
+The archive only becomes searchable once adsb.lol has published a day and the
+processor has ingested it, which leaves the most recent day or two invisible.
+The **collector** fills that window by polling ADS-B receivers for readsb's
+`aircraft.json` and writing provisional flight rows.
+
+### What it is not
+
+Live rows are **not** comparable to archive rows, and the UI says so. The
+archive aggregates thousands of receivers worldwide; a feeder sees its own
+couple of hundred kilometres of sky. Most aircraft airborne right now are
+invisible to every feeder on the list, so a search over the gap finding nothing
+does not mean an aircraft did not fly. This is why live rows are opt-in: they
+are turned on under **Settings → Live gap-fill data**, and marked in results.
+
+### How a flight is built
+
+Each poll yields one sighting per aircraft. Sightings from every feeder fold
+into a single segment per ICAO, so two receivers watching the same aircraft
+extend one row rather than creating two — that merge is the reason accepting
+more feeders improves coverage. A segment ends when the callsign changes, when
+the aircraft goes unseen for `COLLECTOR_SEGMENT_GAP`, or at UTC midnight
+(`flights.date` demands the split). Callsign validity uses the same rules as
+the trace parser, so a live day and an archive day agree about what counts as a
+flight.
+
+Timestamps come from the collector's own clock minus each entry's `seen` age,
+never from the feeder's `now` field. A crowdsourced receiver with a wrong clock
+would otherwise file flights under the wrong day.
+
+Open segments are written on every flush, so an aircraft still in the air is
+searchable immediately with a `last_seen` that advances.
+
+### Reconciliation
+
+When the release covering a date is ingested, the processor deletes that date's
+live rows inside the same transaction and the archive replaces them wholesale.
+They are never merged: the two sources segment flights differently — the
+archive on the trace's new-leg flag, the collector on a gap timeout — so the
+same flight lands on different boundaries that no unique constraint would
+recognise as a duplicate.
+
+Two further guards keep the boundary clean. The collector refuses to insert any
+row for a date that already has a processed release, and the processor sweeps
+stragglers on every poll cycle.
+
+**The statistics describe the archive only.** Flight counts come from rollups
+computed over archive rows; aircraft counts use `aircraft.archive_seen`, a flag
+the processor sets and the collector never does. The collector still writes
+`aircraft` rows, because a live flight needs a registration and a type, but an
+airframe seen only in the gap window does not count towards any total until a
+release confirms it. Without this the week, month and year spans — which reach
+forward into the days the collector is still writing — would make the numbers
+move as the gap fills and then unfills.
+
+### Feeders are crowdsourced
+
+Feeders live in the `feeders` table, not in configuration. Anyone can offer one
+through **Feeders** in the UI. On submission the API fetches the URL and checks
+that it really serves `aircraft.json`, then records it with `enabled = FALSE`.
+Nothing is polled until an administrator approves it:
+
+```sql
+UPDATE feeders SET enabled = TRUE WHERE name = 'Some feeder';
+```
+
+The collector re-reads the roster every `COLLECTOR_FEEDER_RELOAD`, so that
+takes effect without a restart. Submitted URLs are visible in the database
+only — the public roster shows names and status, so contributing a receiver
+does not publish its endpoint.
+
+A submission stores the URL, the name, the optional contact, the submission
+time, the probe result, and an HMAC of the submitter's IP address keyed by
+`SUBMIT_IP_SALT`. The address itself is never stored, and the hash is used only
+to rate limit submissions. The submit form lists all of this next to the
+fields, and that list is meant to stay in step with what
+`api/handlers/feeders.go` actually writes.
+
+### Security
+
+The submit endpoint makes this server fetch a URL chosen by an untrusted
+party, which is a server-side request forgery primitive unless it is guarded.
+`shared/feedcheck` does the guarding, for both the API's submission probe and
+the collector's polling:
+
+- Only `http` and `https`; no credentials in the URL.
+- Every address is checked inside the dialer and the **vetted IP is dialled
+  directly**, which closes the DNS-rebinding window between checking a name and
+  connecting to it. Redirects run back through the same dialer.
+- Loopback, private, link-local, CGNAT, multicast, reserved and NAT64 ranges are
+  refused, IPv4-mapped IPv6 included.
+- Responses are capped at 16 MB and error messages never echo the address, so a
+  failed probe is not an oracle for what is listening inside the network.
+- Submissions are rate limited per address: a short in-memory burst limit and a
+  24-hour limit counted in the database.
+
+`ALLOW_PRIVATE_FEEDERS=true` disables the address check, which is needed when
+feeders sit on the same Docker network. **Only set it where the submit form is
+not reachable by the public**, or you have handed anyone a probe of your
+internal network.
+
+Approval remains the real control: an approved feeder is a trusted data source
+and can serve fabricated `aircraft.json` to inject invented flights. The blast
+radius is one gap window, since the archive replaces those rows, and
+`flights.feeder_id` records which feeder opened each segment so one feeder's
+output can be purged:
+
+```sql
+DELETE FROM flights WHERE feeder_id = (SELECT id FROM feeders WHERE name = 'Bad feeder');
+```
 
 ---
 

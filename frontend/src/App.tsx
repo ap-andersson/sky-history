@@ -15,6 +15,12 @@ import {
   getFailedDates,
   getAircraftTypes,
   getPeriodStats,
+  getConfig,
+  getFeeders,
+  submitFeeder,
+  type AppConfig,
+  type Feeder,
+  type FeedersResult,
   type SearchResult,
   type AdvancedSearchResult,
   type Stats,
@@ -33,6 +39,7 @@ type View =
   | { kind: "detail"; icao: string; date: string; aircraft: Aircraft | null; flights: FlightWithAircraft[]; links: ExternalLink[]; total: number; offset: number }
   | { kind: "stats"; data: PeriodStats }
   | { kind: "data" }
+  | { kind: "feeders" }
   | { kind: "settings" };
 
 // Serializable route info for history state
@@ -43,6 +50,7 @@ type Route =
   | { kind: "detail"; icao: string; date: string }
   | { kind: "stats"; period?: string; date?: string }
   | { kind: "data" }
+  | { kind: "feeders" }
   | { kind: "settings" };
 
 function routeToPath(route: Route): string {
@@ -77,6 +85,8 @@ function routeToPath(route: Route): string {
     }
     case "data":
       return "/data";
+    case "feeders":
+      return "/feeders";
     case "settings":
       return "/settings";
   }
@@ -110,6 +120,7 @@ function parseRoute(path: string, qs: URLSearchParams): Route {
     };
   }
   if (path === "/data") return { kind: "data" };
+  if (path === "/feeders") return { kind: "feeders" };
   if (path === "/settings") return { kind: "settings" };
   return { kind: "home" };
 }
@@ -122,6 +133,11 @@ export function App() {
   const [view, setView] = useState<View>({ kind: "home" });
   const [failedDates, setFailedDates] = useState<FailedDate[]>([]);
   const [aircraftTypes, setAircraftTypes] = useState<AircraftType[]>([]);
+
+  // Which optional features this deployment has on. Assume off until the API
+  // says otherwise, so a slow or failed config fetch hides the feature rather
+  // than offering something that will not work.
+  const [appConfig, setAppConfig] = useState<AppConfig>({ live_gap_fill: false });
 
   // Display preferences, persisted in this browser
   const [settings, setSettingsState] = useState<Settings>(() => loadSettings());
@@ -230,6 +246,11 @@ export function App() {
       case "data":
         setView({ kind: "data" });
         break;
+      case "feeders":
+        // Guarded at render time rather than here: the config fetch may not
+        // have landed when a deep link is applied.
+        setView({ kind: "feeders" });
+        break;
       case "settings":
         setView({ kind: "settings" });
         break;
@@ -260,6 +281,7 @@ export function App() {
     getStats().then(setStats).catch(() => {});
     getFailedDates().then(r => setFailedDates(r.failed_dates || [])).catch(() => {});
     getAircraftTypes().then(r => setAircraftTypes(r.types || [])).catch(() => {});
+    getConfig().then(setAppConfig).catch(() => {});
   }, []);
 
   // Quick search
@@ -407,6 +429,12 @@ export function App() {
     pushRoute({ kind: "settings" });
   };
 
+  const goFeeders = () => {
+    setView({ kind: "feeders" });
+    setError("");
+    pushRoute({ kind: "feeders" });
+  };
+
   const goStats = useCallback(async (period?: string, date?: string) => {
     setLoading(true);
     setError("");
@@ -443,7 +471,9 @@ export function App() {
         onStart={goHome}
         onData={goData}
         onStats={() => goStats()}
+        onFeeders={goFeeders}
         onSettings={goSettings}
+        showFeeders={appConfig.live_gap_fill}
       />
 
       {/* Search belongs to Start and to the pages showing its results. */}
@@ -582,8 +612,15 @@ export function App() {
 
       {view.kind === "data" && <DataPage stats={stats} failedDates={failedDates} />}
 
+      {view.kind === "feeders" &&
+        (appConfig.live_gap_fill ? <FeedersPage /> : <FeatureOffPage />)}
+
       {view.kind === "settings" && (
-        <SettingsPage settings={settings} onChange={applySettings} />
+        <SettingsPage
+          settings={settings}
+          onChange={applySettings}
+          showLiveGapFill={appConfig.live_gap_fill}
+        />
       )}
     </div>
   );
@@ -612,12 +649,13 @@ function Clock() {
   return <span class="utc-clock" title={timezoneTooltip()}>{now}</span>;
 }
 
-type NavKey = "start" | "data" | "stats" | "settings";
+type NavKey = "start" | "data" | "stats" | "feeders" | "settings";
 
 const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "start", label: "Start" },
   { key: "data", label: "Data" },
   { key: "stats", label: "Statistics" },
+  { key: "feeders", label: "Feeders" },
   { key: "settings", label: "Settings" },
 ];
 
@@ -626,28 +664,35 @@ function Nav({
   onStart,
   onData,
   onStats,
+  onFeeders,
   onSettings,
+  showFeeders,
 }: {
   current: View["kind"];
   onStart: () => void;
   onData: () => void;
   onStats: () => void;
+  onFeeders: () => void;
   onSettings: () => void;
+  showFeeders: boolean;
 }) {
   // Search result and aircraft views all live under Start.
   const active: NavKey =
     current === "stats" ? "stats"
     : current === "data" ? "data"
+    : current === "feeders" ? "feeders"
     : current === "settings" ? "settings"
     : "start";
 
   const handlers: Record<NavKey, () => void> = {
-    start: onStart, data: onData, stats: onStats, settings: onSettings,
+    start: onStart, data: onData, stats: onStats, feeders: onFeeders, settings: onSettings,
   };
+
+  const items = showFeeders ? NAV_ITEMS : NAV_ITEMS.filter(i => i.key !== "feeders");
 
   return (
     <nav class="main-nav" aria-label="Main">
-      {NAV_ITEMS.map(item => (
+      {items.map(item => (
         <button
           key={item.key}
           type="button"
@@ -733,9 +778,11 @@ function DataPage({ stats, failedDates }: { stats: Stats | null; failedDates: Fa
 function SettingsPage({
   settings,
   onChange,
+  showLiveGapFill,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
+  showLiveGapFill: boolean;
 }) {
   const sample = "2026-02-14T19:09:00Z";
 
@@ -797,12 +844,207 @@ function SettingsPage({
         </div>
       </fieldset>
 
+      {showLiveGapFill && (
+      <fieldset class="setting">
+        <legend>Live gap-fill data</legend>
+        <p class="setting-help">
+          The archive only becomes searchable once adsb.lol has published the day
+          and it has been processed, which leaves the most recent day or two
+          missing. Approved feeders fill that gap as it happens.
+        </p>
+        <p class="setting-help">
+          What they add is <strong>not</strong> comparable to the archive. The
+          archive aggregates thousands of receivers worldwide; the feeders here
+          see only their own patch of sky, so most aircraft flying right now are
+          invisible to them. A search over the gap finding nothing does not mean
+          an aircraft did not fly. Live rows are marked, and are replaced by the
+          archive once it covers their date.
+        </p>
+        <div class="setting-options">
+          <label class="setting-option">
+            <input type="checkbox" checked={settings.includeLive}
+              onChange={(e) => onChange({ ...settings, includeLive: (e.target as HTMLInputElement).checked })} />
+            <span>Include live data in searches</span>
+          </label>
+        </div>
+      </fieldset>
+      )}
+
       <div class="setting-preview">
         <span class="data-label">Preview</span>
         <span class="mono" title={timezoneTooltip()}>
           {formatDate("2026-02-14")} {formatTime(sample)}
         </span>
       </div>
+    </div>
+  );
+}
+
+function FeedersPage() {
+  const [data, setData] = useState<FeedersResult | null>(null);
+  const [loadError, setLoadError] = useState("");
+
+  const [url, setUrl] = useState("");
+  const [name, setName] = useState("");
+  const [contact, setContact] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+  const [submitted, setSubmitted] = useState("");
+
+  const load = useCallback(() => {
+    getFeeders()
+      .then(setData)
+      .catch((e) => setLoadError(e instanceof Error ? e.message : "Failed to load feeders"));
+  }, []);
+
+  useEffect(load, [load]);
+
+  const handleSubmit = async (e: Event) => {
+    e.preventDefault();
+    setSubmitError("");
+    setSubmitted("");
+    setSubmitting(true);
+    try {
+      const res = await submitFeeder({ url, name, contact });
+      setSubmitted(res.message);
+      setUrl("");
+      setName("");
+      setContact("");
+      load();
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Submission failed");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div class="page">
+      <h2>Feeders</h2>
+      <p class="page-intro">
+        Receivers that fill the gap between the last processed archive day and
+        now. Anyone may offer one; it is checked straight away and then waits for
+        an administrator to approve it before anything is polled.
+      </p>
+
+      {loadError && <div class="error">{loadError}</div>}
+
+      <h3>Current feeders</h3>
+      {!data ? (
+        <p class="muted">Loading…</p>
+      ) : data.feeders.length === 0 ? (
+        <p class="muted">No feeders yet. Yours could be the first.</p>
+      ) : (
+        <>
+          <div class="feeder-list">
+            {data.feeders.map((f) => (
+              <FeederRow key={f.name} feeder={f} />
+            ))}
+          </div>
+          {data.live_flight_count > 0 && (
+            <p class="muted feeder-window">
+              {data.live_flight_count.toLocaleString()} live flight
+              {data.live_flight_count === 1 ? "" : "s"} recorded
+              {data.live_from && data.live_to && (
+                <> between {formatTime(data.live_from)} and {formatTime(data.live_to)}</>
+              )}
+              . Turn on live data under Settings to include them in searches.
+            </p>
+          )}
+        </>
+      )}
+
+      <h3>Offer a feeder</h3>
+      <p class="page-intro">
+        The URL must serve readsb's <code>aircraft.json</code> — on a standard
+        tar1090 install that is <code>https://your-site/data/aircraft.json</code>.
+        It has to be reachable from the public internet.
+      </p>
+
+      <form class="feeder-form" onSubmit={handleSubmit}>
+        <label>
+          <span>aircraft.json URL</span>
+          <input
+            type="url"
+            required
+            placeholder="https://adsb.example.com/data/aircraft.json"
+            value={url}
+            onInput={(e) => setUrl((e.target as HTMLInputElement).value)}
+          />
+        </label>
+        <label>
+          <span>Name for the feeder</span>
+          <input
+            type="text"
+            required
+            maxLength={60}
+            placeholder="e.g. Jonkoping South"
+            value={name}
+            onInput={(e) => setName((e.target as HTMLInputElement).value)}
+          />
+        </label>
+        <label>
+          <span>Contact (optional)</span>
+          <input
+            type="text"
+            maxLength={120}
+            placeholder="How to reach you if the feeder breaks"
+            value={contact}
+            onInput={(e) => setContact((e.target as HTMLInputElement).value)}
+          />
+        </label>
+
+        {/* Kept in step with what handlers/feeders.go actually writes. If the
+            stored fields change, this list changes with them. */}
+        <div class="feeder-disclosure">
+          <strong>What gets saved when you submit</strong>
+          <ul>
+            <li>The <strong>URL</strong> you enter. Visible to the administrator only — it is never shown on this page or returned by the API.</li>
+            <li>The <strong>name</strong> you enter. Shown publicly in the list above.</li>
+            <li>The <strong>contact</strong> you enter, if any. Visible to the administrator only.</li>
+            <li>The <strong>time</strong> you submitted.</li>
+            <li>The <strong>result of the check</strong>: whether the URL answered and how many aircraft it was reporting at that moment.</li>
+            <li>A <strong>one-way hash of your IP address</strong>, keyed with a secret. It is used only to limit how many feeders one address can submit, and the address itself is never stored.</li>
+          </ul>
+          <p>
+            Submitting fetches the URL you give from this server to check it.
+            Rows stay in the database until the administrator removes them.
+          </p>
+        </div>
+
+        <button type="submit" disabled={submitting || !url.trim() || !name.trim()}>
+          {submitting ? "Checking…" : "Submit for approval"}
+        </button>
+      </form>
+
+      {submitError && <div class="error">{submitError}</div>}
+      {submitted && <div class="feeder-success">{submitted}</div>}
+    </div>
+  );
+}
+
+function FeederRow({ feeder }: { feeder: Feeder }) {
+  const label =
+    feeder.status === "live" ? "Live"
+    : feeder.status === "stalled" ? "Not responding"
+    : "Awaiting approval";
+
+  const hint =
+    feeder.status === "live" ? "Polled and answering"
+    : feeder.status === "stalled" ? "Approved, but it has not answered recently"
+    : "Checked and valid; an administrator has not enabled it yet";
+
+  return (
+    <div class="feeder-item">
+      <span class="feeder-name">{feeder.name}</span>
+      <span class={`feeder-status feeder-status-${feeder.status}`} title={hint}>
+        {label}
+      </span>
+      {feeder.last_ok_at && (
+        <span class="feeder-seen mono" title={timezoneTooltip()}>
+          {formatTime(feeder.last_ok_at)}
+        </span>
+      )}
     </div>
   );
 }
@@ -1123,7 +1365,17 @@ function FlightTable({
                     </a>
                   </td>
                 )}
-                <td class="mono">{f.callsign}</td>
+                <td class="mono">
+                  {f.callsign}
+                  {f.source === "live" && (
+                    <span
+                      class="live-badge"
+                      title="Seen by a local feeder, not yet confirmed by the adsb.lol archive"
+                    >
+                      live
+                    </span>
+                  )}
+                </td>
                 <td>{formatDate(flightDate)}</td>
                 <td title={timezoneTooltip()}>{formatTime(f.first_seen)}</td>
                 <td title={timezoneTooltip()}>{formatTime(f.last_seen)}</td>
@@ -1463,4 +1715,17 @@ function shiftDate(dateStr: string, days: number): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+// Shown when a deep link reaches a feature this deployment has switched off.
+function FeatureOffPage() {
+  return (
+    <div class="page">
+      <h2>Feeders</h2>
+      <p class="page-intro">
+        Live gap-fill is not enabled on this deployment. An administrator turns
+        it on by setting <code>ENABLE_LIVE_GAPFILL=true</code>.
+      </p>
+    </div>
+  );
 }

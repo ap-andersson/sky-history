@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Live gap-fill: the days the archive has not published yet are searchable from
+crowdsourced ADS-B receivers.
+
+### Added
+
+- **`ENABLE_LIVE_GAPFILL`**, off by default and required on both the `api` and
+  `collector` services. Until it is set the collector polls nothing, the
+  `/api/feeders` routes are never registered, `include_live` is ignored, and
+  neither the Feeders page nor its setting appears in the UI — so updating an
+  existing deployment does not start accepting public submissions by surprise.
+  `GET /api/config` reports which optional features are on.
+- **`shared/` Go module**, required by `processor`, `api` and `collector`
+  through a relative `replace` directive. Their Docker build contexts are now
+  the repository root (`docker build -f api/Dockerfile .`) so the sibling
+  module is reachable; a `.dockerignore` keeps that context small. It holds
+  `feedcheck`, the `.env` discovery and typed environment readers that were
+  copied into all three services, and the `Aircraft` and `Flight` domain rows.
+  What stays per-service is what is genuinely per-service: the `Config` structs
+  (three unrelated sets of knobs), the parser's `ParsedAircraft`, and the API's
+  response shapes.
+- **`collector` service.** Polls approved feeders for readsb's `aircraft.json`
+  and writes provisional flight rows covering the window between the last
+  processed release and now. Sightings from every feeder fold into one segment
+  per aircraft, so more feeders widen coverage rather than duplicating rows.
+  Open segments are written on each flush, so an aircraft still in the air is
+  searchable with a `last_seen` that advances.
+- **`feeders` table and submit form.** Feeders live in the database rather than
+  in configuration, and anyone can offer one through the new **Feeders** page.
+  A submission is fetched and checked against the `aircraft.json` shape
+  immediately, then recorded with `enabled = FALSE` until an administrator
+  flips it by hand. The collector re-reads the roster on an interval, so
+  approving a feeder needs no restart. The public roster shows names and status
+  only; submitted URLs stay in the database.
+- **`shared/feedcheck`**, used by both the API and the collector, which guards
+  every fetch of a submitted URL: scheme allowlist, the vetted IP dialled directly to
+  close the DNS-rebinding window, refusal of loopback, private, link-local,
+  CGNAT, multicast, reserved and NAT64 ranges, a response size cap, and error
+  messages that do not reveal what is listening on an internal address.
+  Submissions are rate limited per address, in memory and over 24 hours.
+- **`flights.source`** (`archive` or `live`) and **`flights.feeder_id`**, so
+  live rows are distinguishable in results and one feeder's output can be
+  purged on its own.
+- **Settings → Live gap-fill data**, off by default. Live rows are excluded
+  from search unless asked for, via `include_live=true` on the search
+  endpoints, and are badged where they appear.
+
+### Removed
+
+- `processor/models`' unused `Flight` and `ProcessedRelease` types, which
+  nothing referenced.
+
+### Changed
+
+- The processor deletes a date's live rows inside the transaction that ingests
+  its release, so the archive replaces them wholesale. They are never merged:
+  the archive segments flights on the trace's new-leg flag and the collector on
+  a gap timeout, so the same flight lands on boundaries no unique constraint
+  would recognise as a duplicate.
+- The collector refuses to write any row for a date that already has a
+  processed release, and the processor sweeps stragglers each poll cycle. Both
+  are needed: a segment open across the moment a release lands would otherwise
+  be rewritten after every sweep.
+- Statistics count archive data only. Flight rollups filter on `source`, and
+  aircraft totals use the new `aircraft.archive_seen` flag, which the processor
+  sets and the collector never does. The collector still writes `aircraft` rows
+  — a live flight needs a registration and a type — but an airframe seen only
+  in the gap window counts towards nothing until a release confirms it. The
+  week, month and year spans reach forward into the days the collector is still
+  writing, so without this the numbers would move as the gap fills and unfills.
+
 ## [1.3.0] - 2026-09-13
 
 Searching by aircraft type no longer depends on how common the type is.

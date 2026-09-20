@@ -72,3 +72,46 @@ func (r *FlightRepo) FillInMissingTypes(ctx context.Context, tx pgx.Tx) (int64, 
 	}
 	return tag.RowsAffected(), nil
 }
+
+// DeleteLiveForDate removes the collector's provisional rows for a date, so
+// the archive being ingested replaces them wholesale.
+//
+// Replacement rather than merge, because the two sources segment flights
+// differently: the archive splits on the trace's new-leg flag with a whole
+// day in view, the collector on a gap timeout as the day happens. The same
+// flight therefore lands on different boundaries and different first_seen
+// values, which the unique key cannot recognise as a duplicate. Merging would
+// quietly double-count every flight in the gap window.
+//
+// Called inside the release transaction, before the archive rows are inserted,
+// so there is never a moment where both are visible.
+func (r *FlightRepo) DeleteLiveForDate(ctx context.Context, tx pgx.Tx, date time.Time) (int64, error) {
+	tag, err := tx.Exec(ctx, `
+        DELETE FROM flights WHERE date = $1 AND source = 'live'
+    `, date)
+	if err != nil {
+		return 0, fmt.Errorf("delete live flights for %s: %w", date.Format("2006-01-02"), err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// DeleteOrphanedLive removes live rows for any date the archive already
+// covers.
+//
+// DeleteLiveForDate handles the common case inside the release transaction,
+// but the collector is a separate process writing under READ COMMITTED: a
+// flush that started before the delete can land after it, leaving live rows
+// for a date that has since been archived. They would then show up alongside
+// the archive's own version of the same flights. Narrow window, cheap sweep,
+// so it runs every poll cycle rather than being reasoned about.
+func (r *FlightRepo) DeleteOrphanedLive(ctx context.Context) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `
+        DELETE FROM flights f
+        WHERE f.source = 'live'
+          AND EXISTS (SELECT 1 FROM processed_releases pr WHERE pr.date = f.date)
+    `)
+	if err != nil {
+		return 0, fmt.Errorf("delete orphaned live flights: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

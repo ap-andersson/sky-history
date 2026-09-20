@@ -104,6 +104,14 @@ type Processor struct {
 func (p *Processor) checkAndProcess(ctx context.Context, backfill bool) {
 	log.Println("Checking for new releases...")
 
+	// Clear any live rows the collector wrote for a date the archive has since
+	// covered. See DeleteOrphanedLive for the race this closes.
+	if removed, err := p.flightRepo.DeleteOrphanedLive(ctx); err != nil {
+		log.Printf("Error sweeping orphaned live flights: %v", err)
+	} else if removed > 0 {
+		log.Printf("Swept %d live flight row(s) superseded by archive data", removed)
+	}
+
 	isProcessed := func(tag string) (bool, error) {
 		// Skip permanently failed releases
 		permFailed, err := p.releaseRepo.IsPermanentlyFailed(ctx, tag)
@@ -210,6 +218,16 @@ func (p *Processor) processRelease(ctx context.Context, release github.ReleaseIn
 		return
 	}
 	defer tx.Rollback(ctx) // no-op after commit
+
+	// The collector's provisional rows for this date go first. The archive is
+	// authoritative and the two segment flights differently, so they replace
+	// rather than merge -- see DeleteLiveForDate.
+	if removed, err := p.flightRepo.DeleteLiveForDate(ctx, tx, release.Date); err != nil {
+		log.Printf("Error removing live flights for %s: %v", release.Tag, err)
+		return
+	} else if removed > 0 {
+		log.Printf("  Replaced %d live flight row(s) with archive data", removed)
+	}
 
 	aircraftCount, err := p.aircraftRepo.UpsertBatch(ctx, tx, aircraft, p.typeRepo)
 	if err != nil {

@@ -12,6 +12,23 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// sourceFilter restricts a flight query to archive rows unless the caller has
+// opted into live data.
+//
+// Live rows are gap-fill from the collector: local-receiver coverage only, and
+// provisional until the archive for their date lands and replaces them. They
+// would change what an existing search returns, so a caller has to ask for
+// them. prefix is the table alias in the query, or "" where there is none.
+func sourceFilter(includeLive bool, prefix string) string {
+	if includeLive {
+		return ""
+	}
+	if prefix != "" {
+		prefix += "."
+	}
+	return " AND " + prefix + "source = 'archive'"
+}
+
 // Queries provides read-only database access for the API.
 type Queries struct {
 	pool *pgxpool.Pool
@@ -43,12 +60,12 @@ func (q *Queries) GetAircraft(ctx context.Context, icao string) (*models.Aircraf
 // An exact match is tried first, since that is the common case and is served
 // directly by idx_flights_callsign. Only when there is no exact match does it
 // fall back to a prefix search, so "RYR" still matches "RYR1AB", "RYR25K".
-func (q *Queries) SearchByCallsign(ctx context.Context, callsign string, limit, offset int) ([]models.FlightWithAircraft, int, error) {
+func (q *Queries) SearchByCallsign(ctx context.Context, callsign string, limit, offset int, includeLive bool) ([]models.FlightWithAircraft, int, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 50
 	}
 
-	results, total, err := q.searchCallsign(ctx, "f.callsign = $1", callsign, limit, offset)
+	results, total, err := q.searchCallsign(ctx, "f.callsign = $1", callsign, limit, offset, includeLive)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -58,11 +75,12 @@ func (q *Queries) SearchByCallsign(ctx context.Context, callsign string, limit, 
 
 	// LIKE rather than ILIKE: callsigns are stored uppercase and the caller
 	// uppercases the query, and only LIKE can use the prefix index.
-	return q.searchCallsign(ctx, "f.callsign LIKE $1", callsign+"%", limit, offset)
+	return q.searchCallsign(ctx, "f.callsign LIKE $1", callsign+"%", limit, offset, includeLive)
 }
 
 // searchCallsign runs the callsign search for a single predicate on f.callsign.
-func (q *Queries) searchCallsign(ctx context.Context, cond, arg string, limit, offset int) ([]models.FlightWithAircraft, int, error) {
+func (q *Queries) searchCallsign(ctx context.Context, cond, arg string, limit, offset int, includeLive bool) ([]models.FlightWithAircraft, int, error) {
+	cond += sourceFilter(includeLive, "f")
 	var total int
 	err := q.pool.QueryRow(ctx,
 		"SELECT COUNT(*) FROM flights f WHERE "+cond, arg).Scan(&total)
@@ -74,7 +92,7 @@ func (q *Queries) searchCallsign(ctx context.Context, cond, arg string, limit, o
 	}
 
 	rows, err := q.pool.Query(ctx, `
-        SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen,
+        SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen, f.source,
                COALESCE(a.registration, ''), COALESCE(a.type_code, ''), COALESCE(a.description, '')
         FROM flights f
         LEFT JOIN aircraft a ON a.icao = f.icao
@@ -95,22 +113,24 @@ func (q *Queries) searchCallsign(ctx context.Context, cond, arg string, limit, o
 }
 
 // GetFlightsByICAO returns all flights for a given aircraft.
-func (q *Queries) GetFlightsByICAO(ctx context.Context, icao string, limit, offset int) ([]models.Flight, int, error) {
+func (q *Queries) GetFlightsByICAO(ctx context.Context, icao string, limit, offset int, includeLive bool) ([]models.Flight, int, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 50
 	}
 
+	filter := sourceFilter(includeLive, "")
+
 	var total int
 	err := q.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM flights WHERE icao = $1", icao).Scan(&total)
+		"SELECT COUNT(*) FROM flights WHERE icao = $1"+filter, icao).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count flights by icao: %w", err)
 	}
 
 	rows, err := q.pool.Query(ctx, `
-        SELECT id, icao, callsign, date, first_seen, last_seen
+        SELECT id, icao, callsign, date, first_seen, last_seen, source
         FROM flights
-        WHERE icao = $1
+        WHERE icao = $1`+filter+`
         ORDER BY date DESC, first_seen DESC
         LIMIT $2 OFFSET $3
     `, icao, limit, offset)
@@ -127,24 +147,24 @@ func (q *Queries) GetFlightsByICAO(ctx context.Context, icao string, limit, offs
 }
 
 // GetFlightsByDate returns all flights on a given date.
-func (q *Queries) GetFlightsByDate(ctx context.Context, date time.Time, limit, offset int) ([]models.FlightWithAircraft, int, error) {
+func (q *Queries) GetFlightsByDate(ctx context.Context, date time.Time, limit, offset int, includeLive bool) ([]models.FlightWithAircraft, int, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 50
 	}
 
 	var total int
 	err := q.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM flights WHERE date = $1", date).Scan(&total)
+		"SELECT COUNT(*) FROM flights WHERE date = $1"+sourceFilter(includeLive, ""), date).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count flights by date: %w", err)
 	}
 
 	rows, err := q.pool.Query(ctx, `
-        SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen,
+        SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen, f.source,
                COALESCE(a.registration, ''), COALESCE(a.type_code, ''), COALESCE(a.description, '')
         FROM flights f
         LEFT JOIN aircraft a ON a.icao = f.icao
-        WHERE f.date = $1
+        WHERE f.date = $1`+sourceFilter(includeLive, "f")+`
         ORDER BY f.callsign, f.first_seen
         LIMIT $2 OFFSET $3
     `, date, limit, offset)
@@ -161,7 +181,7 @@ func (q *Queries) GetFlightsByDate(ctx context.Context, date time.Time, limit, o
 }
 
 // SearchByRegistration finds an aircraft by registration and returns its flights.
-func (q *Queries) SearchByRegistration(ctx context.Context, registration string, limit, offset int) ([]models.FlightWithAircraft, int, error) {
+func (q *Queries) SearchByRegistration(ctx context.Context, registration string, limit, offset int, includeLive bool) ([]models.FlightWithAircraft, int, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 50
 	}
@@ -179,17 +199,17 @@ func (q *Queries) SearchByRegistration(ctx context.Context, registration string,
 
 	var total int
 	err = q.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM flights WHERE icao = $1", icao).Scan(&total)
+		"SELECT COUNT(*) FROM flights WHERE icao = $1"+sourceFilter(includeLive, ""), icao).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count flights by registration: %w", err)
 	}
 
 	rows, err := q.pool.Query(ctx, `
-        SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen,
+        SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen, f.source,
                COALESCE(a.registration, ''), COALESCE(a.type_code, ''), COALESCE(a.description, '')
         FROM flights f
         LEFT JOIN aircraft a ON a.icao = f.icao
-        WHERE f.icao = $1
+        WHERE f.icao = $1`+sourceFilter(includeLive, "f")+`
         ORDER BY f.date DESC, f.first_seen DESC
         LIMIT $2 OFFSET $3
     `, icao, limit, offset)
@@ -211,10 +231,15 @@ func (q *Queries) GetStats(ctx context.Context) (*models.Stats, error) {
 	// Total flights comes from daily_stats rather than COUNT(*) over flights,
 	// which scans the whole table for a number shown on every page load. The
 	// rollup is derived from flights, so the two agree exactly.
+	//
+	// Aircraft are counted with archive_seen, so an airframe the collector has
+	// seen but no release has confirmed does not inflate the figure. These
+	// statistics describe the archive; live gap-fill is an extra on top of it,
+	// not part of what has been processed.
 	err := q.pool.QueryRow(ctx, `
         SELECT
             COALESCE((SELECT COUNT(*) FROM processed_releases), 0),
-            COALESCE((SELECT COUNT(*) FROM aircraft), 0),
+            COALESCE((SELECT COUNT(*) FROM aircraft WHERE archive_seen), 0),
             COALESCE((SELECT SUM(flight_count) FROM daily_stats), 0)
     `).Scan(&s.TotalReleases, &s.TotalAircraft, &s.TotalFlights)
 	if err != nil {
@@ -239,7 +264,7 @@ func scanFlights(rows pgx.Rows) ([]models.Flight, error) {
 	var results []models.Flight
 	for rows.Next() {
 		var f models.Flight
-		if err := rows.Scan(&f.ID, &f.ICAO, &f.Callsign, &f.Date, &f.FirstSeen, &f.LastSeen); err != nil {
+		if err := rows.Scan(&f.ID, &f.ICAO, &f.Callsign, &f.Date, &f.FirstSeen, &f.LastSeen, &f.Source); err != nil {
 			return nil, fmt.Errorf("scan flight: %w", err)
 		}
 		results = append(results, f)
@@ -252,7 +277,7 @@ func scanFlightsWithAircraft(rows pgx.Rows) ([]models.FlightWithAircraft, error)
 	for rows.Next() {
 		var f models.FlightWithAircraft
 		if err := rows.Scan(
-			&f.ID, &f.ICAO, &f.Callsign, &f.Date, &f.FirstSeen, &f.LastSeen,
+			&f.ID, &f.ICAO, &f.Callsign, &f.Date, &f.FirstSeen, &f.LastSeen, &f.Source,
 			&f.Registration, &f.TypeCode, &f.Description,
 		); err != nil {
 			return nil, fmt.Errorf("scan flight with aircraft: %w", err)
@@ -264,8 +289,12 @@ func scanFlightsWithAircraft(rows pgx.Rows) ([]models.FlightWithAircraft, error)
 
 // GetAircraftTypes returns all aircraft types with aircraft counts.
 func (q *Queries) GetAircraftTypes(ctx context.Context) ([]models.AircraftType, error) {
+	// Counted over archive aircraft only, to agree with the rest of the
+	// statistics. A type known only from live data still appears, with a count
+	// of zero, so the search suggestions stay complete.
 	rows, err := q.pool.Query(ctx, `
-		SELECT at.id, at.type_code, at.description, COUNT(a.icao) as aircraft_count
+		SELECT at.id, at.type_code, at.description,
+		       COUNT(a.icao) FILTER (WHERE a.archive_seen) AS aircraft_count
 		FROM aircraft_types at
 		LEFT JOIN aircraft a ON a.aircraft_type_id = at.id
 		GROUP BY at.id, at.type_code, at.description
@@ -300,7 +329,7 @@ func (q *Queries) TypeCodeExists(ctx context.Context, typeCode string) (bool, er
 }
 
 // SearchByType finds flights for aircraft matching a type code.
-func (q *Queries) SearchByType(ctx context.Context, typeCode string, limit, offset int) ([]models.FlightWithAircraft, int, error) {
+func (q *Queries) SearchByType(ctx context.Context, typeCode string, limit, offset int, includeLive bool) ([]models.FlightWithAircraft, int, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 50
 	}
@@ -313,18 +342,19 @@ func (q *Queries) SearchByType(ctx context.Context, typeCode string, limit, offs
 	var total int
 	err := q.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM flights
-		WHERE aircraft_type_id = (SELECT id FROM aircraft_types WHERE type_code = $1)
-	`, typeCode).Scan(&total)
+		WHERE aircraft_type_id = (SELECT id FROM aircraft_types WHERE type_code = $1)`+
+		sourceFilter(includeLive, ""), typeCode).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count flights by type: %w", err)
 	}
 
 	rows, err := q.pool.Query(ctx, `
-		SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen,
+		SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen, f.source,
 		       COALESCE(a.registration, ''), COALESCE(a.type_code, ''), COALESCE(a.description, '')
 		FROM flights f
 		LEFT JOIN aircraft a ON a.icao = f.icao
-		WHERE f.aircraft_type_id = (SELECT id FROM aircraft_types WHERE type_code = $1)
+		WHERE f.aircraft_type_id = (SELECT id FROM aircraft_types WHERE type_code = $1)`+
+		sourceFilter(includeLive, "f")+`
 		ORDER BY f.date DESC, f.first_seen DESC
 		LIMIT $2 OFFSET $3
 	`, typeCode, limit, offset)
@@ -385,7 +415,7 @@ func (q *Queries) GetFailedDates(ctx context.Context) ([]FailedDate, error) {
 }
 
 // AdvancedSearch queries flights with combinable filters.
-func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, offset int) ([]models.FlightWithAircraft, int, error) {
+func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, offset int, includeLive bool) ([]models.FlightWithAircraft, int, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 50
 	}
@@ -426,7 +456,7 @@ func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, o
 		argN++
 	}
 
-	where := strings.Join(conditions, " AND ")
+	where := strings.Join(conditions, " AND ") + sourceFilter(includeLive, "f")
 
 	// Every filter now lives on flights, so the count never needs the join.
 	var total int
@@ -438,7 +468,7 @@ func (q *Queries) AdvancedSearch(ctx context.Context, f AdvancedFilter, limit, o
 
 	// Query with aircraft join
 	querySQL := fmt.Sprintf(`
-		SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen,
+		SELECT f.id, f.icao, f.callsign, f.date, f.first_seen, f.last_seen, f.source,
 		       COALESCE(a.registration, ''), COALESCE(a.type_code, ''), COALESCE(a.description, '')
 		FROM flights f
 		LEFT JOIN aircraft a ON a.icao = f.icao
@@ -589,6 +619,7 @@ func (q *Queries) periodUniqueAircraft(ctx context.Context, ps *models.PeriodSta
 		WHERE EXISTS (
 			SELECT 1 FROM flights f
 			WHERE f.icao = a.icao AND f.date >= $1 AND f.date <= $2
+			  AND f.source = 'archive'
 		)
 	`, startDate, endDate).Scan(&ps.TotalAircraft)
 	if err != nil {

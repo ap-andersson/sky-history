@@ -20,12 +20,20 @@ jobs:
     strategy:
       matrix:
         include:
+          # The Go services build from the repository root so they can reach
+          # the shared/ module they depend on. See shared/README.md.
           - image: sky-history-processor
-            context: ./processor
+            context: .
+            dockerfile: ./processor/Dockerfile
           - image: sky-history-api
-            context: ./api
+            context: .
+            dockerfile: ./api/Dockerfile
+          - image: sky-history-collector
+            context: .
+            dockerfile: ./collector/Dockerfile
           - image: sky-history-frontend
             context: ./frontend
+            dockerfile: ./frontend/Dockerfile
 
     steps:
       - name: Checkout
@@ -59,6 +67,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

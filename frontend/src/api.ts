@@ -1,3 +1,5 @@
+import { getSettings } from "./settings";
+
 const API_BASE = "/api";
 
 export interface Stats {
@@ -23,6 +25,10 @@ export interface Flight {
   date: string;
   first_seen: string;
   last_seen: string;
+  // "archive" for adsb.lol release data, "live" for a feeder filling the gap
+  // since the last release. Always present; live rows only appear at all when
+  // the search asked for them.
+  source: "archive" | "live";
 }
 
 export interface FlightWithAircraft extends Flight {
@@ -87,6 +93,13 @@ export interface AircraftType {
   aircraft_count: number;
 }
 
+// Live rows are opt-in twice over: the deployment has to have the feature on,
+// and the user has to have asked for it. The server enforces both; this only
+// avoids sending a parameter that would be ignored.
+function liveParam(): string {
+  return getSettings().includeLive ? "&include_live=true" : "";
+}
+
 async function fetchJSON<T>(url: string): Promise<T> {
   const resp = await fetch(url);
   if (!resp.ok) {
@@ -106,7 +119,7 @@ export function search(
   offset = 0
 ): Promise<SearchResult> {
   return fetchJSON(
-    `${API_BASE}/search?q=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}`
+    `${API_BASE}/search?q=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}${liveParam()}`
   );
 }
 
@@ -120,7 +133,7 @@ export function getAircraftFlights(
   offset = 0
 ): Promise<AircraftFlightsResult> {
   return fetchJSON(
-    `${API_BASE}/aircraft/${encodeURIComponent(icao)}/flights?limit=${limit}&offset=${offset}`
+    `${API_BASE}/aircraft/${encodeURIComponent(icao)}/flights?limit=${limit}&offset=${offset}${liveParam()}`
   );
 }
 
@@ -143,6 +156,7 @@ export function advancedSearch(params: {
   if (params.date_to) qs.set("date_to", params.date_to);
   if (params.limit) qs.set("limit", String(params.limit));
   if (params.offset != null) qs.set("offset", String(params.offset));
+  if (getSettings().includeLive) qs.set("include_live", "true");
   return fetchJSON(`${API_BASE}/search/advanced?${qs.toString()}`);
 }
 
@@ -183,4 +197,71 @@ export function getPeriodStats(period: string, date?: string): Promise<PeriodSta
   qs.set("period", period);
   if (date) qs.set("date", date);
   return fetchJSON(`${API_BASE}/stats/period?${qs.toString()}`);
+}
+
+export interface Feeder {
+  name: string;
+  status: "live" | "stalled" | "pending";
+  submitted_at: string;
+  last_ok_at?: string;
+}
+
+export interface FeedersResult {
+  feeders: Feeder[];
+  live_flight_count: number;
+  live_from?: string;
+  live_to?: string;
+}
+
+export function getFeeders(): Promise<FeedersResult> {
+  return fetchJSON(`${API_BASE}/feeders`);
+}
+
+export interface FeederSubmissionResult {
+  status: string;
+  name: string;
+  probe_aircraft: number;
+  message: string;
+}
+
+/**
+ * Offers a feeder for approval. The server fetches the URL to check that it
+ * really serves aircraft.json before recording anything, so a rejection here
+ * means the URL did not answer correctly rather than that it was disallowed.
+ */
+export async function submitFeeder(params: {
+  url: string;
+  name: string;
+  contact?: string;
+}): Promise<FeederSubmissionResult> {
+  const resp = await fetch(`${API_BASE}/feeders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url: params.url,
+      name: params.name,
+      contact: params.contact || "",
+    }),
+  });
+
+  const body = await resp.json().catch(() => ({ error: resp.statusText }));
+  if (!resp.ok) {
+    throw new Error(
+      [body.error || resp.statusText, body.hint].filter(Boolean).join(" ")
+    );
+  }
+  return body as FeederSubmissionResult;
+}
+
+export interface AppConfig {
+  live_gap_fill: boolean;
+}
+
+/**
+ * Which optional features this deployment has switched on. Fetched once at
+ * startup so the UI can leave a feature out entirely rather than offering
+ * something the API would refuse.
+ */
+export function getConfig(): Promise<AppConfig> {
+  return fetchJSON(`${API_BASE}/config`);
 }
