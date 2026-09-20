@@ -1,35 +1,43 @@
 package config
 
 import (
-	"log"
-	"os"
-	"path/filepath"
 	"strings"
+	"time"
 
-	"github.com/joho/godotenv"
+	env "github.com/sky-history/shared/config"
 )
 
 func init() {
-	// godotenv.Load does NOT overwrite existing env vars,
-	// so real env vars (e.g. from Docker) always take priority.
-	envFile := findEnvFile()
-	if envFile != "" {
-		if err := godotenv.Load(envFile); err != nil {
-			log.Printf("Note: could not load %s: %v", envFile, err)
-		} else {
-			log.Printf("Loaded config from %s", envFile)
-		}
-	}
+	env.LoadEnvFile()
 }
 
 type Config struct {
 	DatabaseURL     string
 	ListenAddr      string
 	UltrafeederURLs []string
+
+	// Master switch for the whole live gap-fill feature: the feeder endpoints,
+	// the submit form, the Feeders page and the include_live search parameter.
+	// Off unless explicitly enabled, so an existing deployment that updates
+	// does not suddenly start accepting feeder submissions from the public.
+	EnableLiveGapFill bool
+
+	// Salt for the HMAC that turns a submitter's IP into the hash stored on a
+	// feeder row. Leaving it unset means the hashes do not survive a restart,
+	// which only weakens the long-window submission limit.
+	SubmitIPSalt []byte
+
+	// Allow submitted feeders on private and loopback addresses. Turning this
+	// on where the submit form is public hands anyone a probe of the internal
+	// network -- see the shared/feedcheck package.
+	AllowPrivateFeeders bool
+
+	// How long to wait for a submitted feeder to answer.
+	ProbeTimeout time.Duration
 }
 
 func Load() Config {
-	urls := parseURLs(getEnv("ULTRAFEEDER_URLS", ""))
+	urls := parseURLs(env.Get("ULTRAFEEDER_URLS", ""))
 	// Always include the public instances
 	defaults := []string{
 		"https://globe.adsb.fi",
@@ -39,40 +47,14 @@ func Load() Config {
 	urls = append(defaults, urls...)
 
 	return Config{
-		DatabaseURL:     getEnv("DATABASE_URL", "postgres://skyhistory:skyhistory@localhost:5432/skyhistory?sslmode=disable"),
-		ListenAddr:      getEnv("LISTEN_ADDR", ":8081"),
-		UltrafeederURLs: urls,
+		DatabaseURL:         env.Get("DATABASE_URL", "postgres://skyhistory:skyhistory@localhost:5432/skyhistory?sslmode=disable"),
+		ListenAddr:          env.Get("LISTEN_ADDR", ":8081"),
+		UltrafeederURLs:     urls,
+		EnableLiveGapFill:   env.GetBool("ENABLE_LIVE_GAPFILL", false),
+		SubmitIPSalt:        []byte(env.Get("SUBMIT_IP_SALT", "")),
+		AllowPrivateFeeders: env.GetBool("ALLOW_PRIVATE_FEEDERS", false),
+		ProbeTimeout:        env.GetDuration("FEEDER_PROBE_TIMEOUT", 10*time.Second),
 	}
-}
-
-func getEnv(key, fallback string) string {
-	if val, ok := os.LookupEnv(key); ok {
-		return val
-	}
-	return fallback
-}
-
-// findEnvFile walks upward from the current directory looking for a .env file.
-func findEnvFile() string {
-	if f := os.Getenv("CONFIG_FILE"); f != "" {
-		return f
-	}
-	dir, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-	for {
-		candidate := filepath.Join(dir, ".env")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return ""
 }
 
 func parseURLs(s string) []string {

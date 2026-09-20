@@ -1,8 +1,9 @@
 // User preferences, stored in this browser only.
 //
-// These affect presentation exclusively. Times and dates arrive from the API in
-// UTC and are stored that way; nothing here changes what is sent to or read
-// from the database.
+// Most of these affect presentation exclusively: times and dates arrive from
+// the API in UTC and are stored that way, and nothing about formatting changes
+// what is sent to or read from the database. The one exception is includeLive,
+// which widens what a search asks for.
 
 export type Timezone = "utc" | "browser";
 export type TimeFormat = "24" | "12";
@@ -12,12 +13,21 @@ export type Settings = {
   timezone: Timezone;
   timeFormat: TimeFormat;
   dateFormat: DateFormat;
+
+  // Whether searches also return the collector's live gap-fill rows. Unlike
+  // the rest of this file this one does change what is asked of the API, so it
+  // travels as a query parameter rather than only affecting formatting.
+  includeLive: boolean;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
   timezone: "utc",
   timeFormat: "24",
   dateFormat: "iso",
+  // Off by default: live rows cover only what the approved feeders can see,
+  // which is far less sky than the archive. Returning them without being asked
+  // would make a search look more complete than it is.
+  includeLive: false,
 };
 
 export const DATE_FORMAT_OPTIONS: { value: DateFormat; label: string; example: string }[] = [
@@ -48,6 +58,7 @@ export function loadSettings(): Settings {
         dateFormat: ["iso", "dmy", "mdy", "dmy-dot"].includes(parsed.dateFormat as string)
           ? (parsed.dateFormat as DateFormat)
           : "iso",
+        includeLive: parsed.includeLive === true,
       };
     }
   } catch {

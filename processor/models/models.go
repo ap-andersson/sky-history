@@ -1,35 +1,11 @@
+// Package models holds types specific to the processor.
+//
+// Aircraft and Flight live in shared/models, since the API speaks them too.
+// What is here is the parser's output, which nothing outside the processor
+// ever sees.
 package models
 
 import "time"
-
-// Aircraft represents a unique aircraft identified by ICAO hex code.
-type Aircraft struct {
-	ICAO         string    `json:"icao"`
-	Registration string    `json:"registration,omitempty"`
-	TypeCode     string    `json:"type_code,omitempty"`
-	Description  string    `json:"description,omitempty"`
-	UpdatedAt    time.Time `json:"updated_at"`
-}
-
-// Flight represents a single flight segment: one aircraft using one callsign
-// with observed first and last seen times on a given date.
-type Flight struct {
-	ID        int       `json:"id"`
-	ICAO      string    `json:"icao"`
-	Callsign  string    `json:"callsign"`
-	Date      time.Time `json:"date"`
-	FirstSeen time.Time `json:"first_seen"`
-	LastSeen  time.Time `json:"last_seen"`
-}
-
-// ProcessedRelease tracks which GitHub releases have been ingested.
-type ProcessedRelease struct {
-	Tag           string    `json:"tag"`
-	Date          time.Time `json:"date"`
-	AircraftCount int       `json:"aircraft_count"`
-	FlightCount   int       `json:"flight_count"`
-	ProcessedAt   time.Time `json:"processed_at"`
-}
 
 // ParsedAircraft holds data extracted from a single trace JSON file.
 type ParsedAircraft struct {

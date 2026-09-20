@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -23,11 +24,19 @@ var (
 type Handler struct {
 	queries *db.Queries
 	links   *links.Generator
+
+	// nil when live gap-fill is switched off, which is what makes the feature
+	// absent rather than merely hidden: the endpoints are not registered, so
+	// there is nothing to reach by guessing a URL.
+	feeders *FeederHandler
 }
 
-func NewHandler(queries *db.Queries, linkGen *links.Generator) *Handler {
-	return &Handler{queries: queries, links: linkGen}
+func NewHandler(queries *db.Queries, linkGen *links.Generator, feeders *FeederHandler) *Handler {
+	return &Handler{queries: queries, links: linkGen, feeders: feeders}
 }
+
+// liveEnabled reports whether the live gap-fill feature is switched on.
+func (h *Handler) liveEnabled() bool { return h.feeders != nil }
 
 // RegisterRoutes sets up all API routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
@@ -41,6 +50,41 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/aircraft/{icao}/flights", h.AircraftFlights)
 	mux.HandleFunc("GET /api/flights/date/{date}", h.FlightsByDate)
 	mux.HandleFunc("GET /api/failed-dates", h.FailedDates)
+	mux.HandleFunc("GET /api/config", h.Config)
+
+	if h.liveEnabled() {
+		mux.HandleFunc("GET /api/feeders", h.feeders.ListFeeders)
+		mux.HandleFunc("POST /api/feeders", h.feeders.SubmitFeeder)
+	}
+}
+
+// Config tells the frontend which optional features this deployment has on, so
+// the UI can leave them out entirely rather than offering something the API
+// would refuse.
+func (h *Handler) Config(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"live_gap_fill": h.liveEnabled(),
+	})
+}
+
+// includeLive reports whether the caller has opted into the collector's live
+// gap-fill rows.
+//
+// Off by default, and deliberately so: live rows cover only what the approved
+// feeders can see, which is a small and geographically lopsided slice of the
+// sky compared with the archive's global aggregation. Returning them silently
+// would make a search look like it had found everything.
+func (h *Handler) includeLive(r *http.Request) bool {
+	if !h.liveEnabled() {
+		return false
+	}
+	v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("include_live")))
+	return v == "1" || v == "true" || v == "yes"
+}
+
+// contextWithTimeout bounds work that reaches outside this service.
+func contextWithTimeout(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), 20*time.Second)
 }
 
 // jsonResponse writes a JSON response.
@@ -82,6 +126,7 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q = strings.ToUpper(q)
+	live := h.includeLive(r)
 	limit, offset, err := parsePagination(r)
 	if err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
@@ -107,7 +152,7 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		flights, total, err := h.queries.GetFlightsByICAO(r.Context(), q, limit, offset)
+		flights, total, err := h.queries.GetFlightsByICAO(r.Context(), q, limit, offset, live)
 		if err != nil {
 			log.Printf("Error getting flights: %v", err)
 			jsonError(w, http.StatusInternalServerError, "search failed")
@@ -131,7 +176,7 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 
 	// Try as registration (contains dash or digits mixed with letters, not all digits)
 	if looksLikeRegistration(q) {
-		flights, total, err := h.queries.SearchByRegistration(r.Context(), q, limit, offset)
+		flights, total, err := h.queries.SearchByRegistration(r.Context(), q, limit, offset, live)
 		if err != nil {
 			log.Printf("Error searching by registration: %v", err)
 			jsonError(w, http.StatusInternalServerError, "search failed")
@@ -155,7 +200,7 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("Error checking type code: %v", err)
 	} else if typeExists {
-		flights, total, err := h.queries.SearchByType(r.Context(), q, limit, offset)
+		flights, total, err := h.queries.SearchByType(r.Context(), q, limit, offset, live)
 		if err != nil {
 			log.Printf("Error searching by type: %v", err)
 			jsonError(w, http.StatusInternalServerError, "search failed")
@@ -173,7 +218,7 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Default: search as callsign
-	flights, total, err := h.queries.SearchByCallsign(r.Context(), q, limit, offset)
+	flights, total, err := h.queries.SearchByCallsign(r.Context(), q, limit, offset, live)
 	if err != nil {
 		log.Printf("Error searching by callsign: %v", err)
 		jsonError(w, http.StatusInternalServerError, "search failed")
@@ -229,7 +274,7 @@ func (h *Handler) AircraftFlights(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flights, total, err := h.queries.GetFlightsByICAO(r.Context(), icao, limit, offset)
+	flights, total, err := h.queries.GetFlightsByICAO(r.Context(), icao, limit, offset, h.includeLive(r))
 	if err != nil {
 		log.Printf("Error getting flights: %v", err)
 		jsonError(w, http.StatusInternalServerError, "failed to get flights")
@@ -261,7 +306,7 @@ func (h *Handler) FlightsByDate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flights, total, err := h.queries.GetFlightsByDate(r.Context(), date, limit, offset)
+	flights, total, err := h.queries.GetFlightsByDate(r.Context(), date, limit, offset, h.includeLive(r))
 	if err != nil {
 		log.Printf("Error getting flights by date: %v", err)
 		jsonError(w, http.StatusInternalServerError, "failed to get flights")
@@ -493,7 +538,7 @@ func (h *Handler) AdvancedSearch(w http.ResponseWriter, r *http.Request) {
 		DateTo:   dateTo,
 	}
 
-	flights, total, err := h.queries.AdvancedSearch(r.Context(), filter, limit, offset)
+	flights, total, err := h.queries.AdvancedSearch(r.Context(), filter, limit, offset, h.includeLive(r))
 	if err != nil {
 		log.Printf("Error in advanced search: %v", err)
 		jsonError(w, http.StatusInternalServerError, "search failed")

@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sky-history/processor/models"
+	sharedmodels "github.com/sky-history/shared/models"
 )
 
 // AircraftRepo handles database operations for aircraft records.
@@ -41,10 +42,16 @@ func (r *AircraftRepo) UpsertBatch(ctx context.Context, tx pgx.Tx, aircraft []mo
 			typeID = &id
 		}
 
+		// archive_seen marks this aircraft as present in archive data, which is
+		// what the aircraft totals count. The collector writes the same row for
+		// live flights but never sets the flag, so an airframe only ever seen
+		// in the gap window stays out of the statistics until a release
+		// confirms it.
 		_, err := tx.Exec(ctx, `
-			INSERT INTO aircraft (icao, registration, type_code, description, aircraft_type_id, updated_at)
-			VALUES ($1, $2, $3, $4, $5, NOW())
+			INSERT INTO aircraft (icao, registration, type_code, description, aircraft_type_id, archive_seen, updated_at)
+			VALUES ($1, $2, $3, $4, $5, TRUE, NOW())
 			ON CONFLICT (icao) DO UPDATE SET
+				archive_seen = TRUE,
 				registration = COALESCE(NULLIF(EXCLUDED.registration, ''), aircraft.registration),
 				type_code = COALESCE(NULLIF(EXCLUDED.type_code, ''), aircraft.type_code),
 				description = COALESCE(NULLIF(EXCLUDED.description, ''), aircraft.description),
@@ -61,13 +68,13 @@ func (r *AircraftRepo) UpsertBatch(ctx context.Context, tx pgx.Tx, aircraft []mo
 }
 
 // GetByICAO retrieves a single aircraft by its ICAO hex code.
-func (r *AircraftRepo) GetByICAO(ctx context.Context, icao string) (*models.Aircraft, error) {
+func (r *AircraftRepo) GetByICAO(ctx context.Context, icao string) (*sharedmodels.Aircraft, error) {
 	row := r.pool.QueryRow(ctx, `
         SELECT icao, registration, type_code, description, updated_at
         FROM aircraft WHERE icao = $1
     `, icao)
 
-	var a models.Aircraft
+	var a sharedmodels.Aircraft
 	err := row.Scan(&a.ICAO, &a.Registration, &a.TypeCode, &a.Description, &a.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {

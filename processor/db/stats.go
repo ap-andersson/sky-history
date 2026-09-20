@@ -29,6 +29,12 @@ func NewStatsRepo(pool *pgxpool.Pool) *StatsRepo {
 // produces the same numbers rather than doubling them. Called inside the
 // release transaction, so it sees that release's rows and can never leave the
 // rollups disagreeing with flights.
+//
+// Every figure here counts archive rows only. The collector's live rows are
+// provisional and are replaced as soon as their release lands, so folding them
+// into the statistics would make the numbers jump around as the gap fills and
+// then unfills. It matters most for the period counts below, whose week, month
+// and year spans reach forward into the days the collector is still writing.
 func (r *StatsRepo) RefreshForDate(ctx context.Context, tx pgx.Tx, date time.Time) error {
 	if err := r.refreshDaily(ctx, tx, date); err != nil {
 		return err
@@ -43,7 +49,7 @@ func (r *StatsRepo) refreshDaily(ctx context.Context, tx pgx.Tx, date time.Time)
 	_, err := tx.Exec(ctx, `
         INSERT INTO daily_stats (date, flight_count, aircraft_count, updated_at)
         SELECT $1::date, COUNT(*), COUNT(DISTINCT icao), NOW()
-        FROM flights WHERE date = $1::date
+        FROM flights WHERE date = $1::date AND source = 'archive'
         ON CONFLICT (date) DO UPDATE
            SET flight_count   = EXCLUDED.flight_count,
                aircraft_count = EXCLUDED.aircraft_count,
@@ -68,7 +74,7 @@ func (r *StatsRepo) refreshDailyTypes(ctx context.Context, tx pgx.Tx, date time.
                MAX(NULLIF(a.description, ''))
         FROM flights f
         LEFT JOIN aircraft a ON a.icao = f.icao
-        WHERE f.date = $1::date
+        WHERE f.date = $1::date AND f.source = 'archive'
         GROUP BY 1, 2
     `, date)
 	if err != nil {
@@ -107,6 +113,7 @@ func (r *StatsRepo) refreshPeriodAircraft(ctx context.Context, tx pgx.Tx, date t
                    (SELECT COUNT(*) FROM aircraft a WHERE EXISTS (
                         SELECT 1 FROM flights f
                         WHERE f.icao = a.icao
+                          AND f.source = 'archive'
                           AND f.date >= s.period_start AND f.date <= s.period_end)),
                    NOW()
             FROM span s

@@ -1,16 +1,29 @@
 # Build stage
+#
+# NOTE: the build context is the REPOSITORY ROOT, not this directory, because
+# this service depends on the sibling shared/ module through a relative replace
+# directive. Build with:
+#
+#   docker build -f processor/Dockerfile .
+#
+# See shared/README.md.
 FROM golang:1.26-alpine AS build
 
 RUN apk add --no-cache git
 
 WORKDIR /src
 
-# Cache dependencies
-COPY go.mod go.sum ./
+# The shared module first: it is small and changes rarely, so it caches well.
+COPY shared/ ./shared/
+
+# Cache dependencies. The replace directive resolves to /src/shared, which is
+# the same relative path as on disk.
+COPY processor/go.mod processor/go.sum ./processor/
+WORKDIR /src/processor
 RUN go mod download
 
 # Build
-COPY . .
+COPY processor/ ./
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /processor .
 
 # Runtime stage
@@ -20,6 +33,6 @@ RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 COPY --from=build /processor /app/processor
-COPY db/migrations /app/db/migrations
+COPY --from=build /src/processor/db/migrations /app/db/migrations
 
 ENTRYPOINT ["/app/processor"]

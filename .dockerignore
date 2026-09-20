@@ -1,0 +1,11 @@
+# The api and collector images build from the repository root so they can reach
+# the shared/ module (see shared/README.md). Everything not needed for a build
+# is excluded here, so the wider context stays cheap to send.
+.git
+.github
+**/node_modules
+**/dist
+*.md
+.env
+.env.example
+db/maintenance

@@ -944,3 +944,140 @@ tr:hover td {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+
+/* --- Live gap-fill and feeders ------------------------------------------ */
+
+/* Marks a flight the archive has not confirmed yet. Deliberately quiet: it is
+   a provenance note, not a warning. */
+.live-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.feeder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.feeder-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.feeder-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.feeder-status {
+  flex-shrink: 0;
+  padding: 0.1rem 0.5rem;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  cursor: help;
+}
+
+.feeder-status-live {
+  color: var(--success);
+  border: 1px solid var(--success);
+}
+
+.feeder-status-stalled {
+  color: var(--error);
+  border: 1px solid var(--error);
+}
+
+.feeder-status-pending {
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+.feeder-seen {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.feeder-window {
+  margin-bottom: 1rem;
+}
+
+.feeder-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 560px;
+}
+
+.feeder-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.feeder-form label span {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.feeder-form button {
+  align-self: flex-start;
+}
+
+/* The submitter is told exactly what the submission records, so it sits with
+   the form rather than behind a link. */
+.feeder-disclosure {
+  padding: 0.75rem 0.9rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+.feeder-disclosure strong {
+  color: var(--text);
+}
+
+.feeder-disclosure ul {
+  margin: 0.5rem 0 0.5rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.feeder-disclosure p {
+  margin-top: 0.5rem;
+}
+
+.feeder-success {
+  margin-top: 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--success);
+  border-radius: 6px;
+  color: var(--success);
+}
+
+@media (max-width: 600px) {
+  .feeder-item {
+    flex-wrap: wrap;
+  }
+}

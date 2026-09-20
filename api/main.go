@@ -34,7 +34,23 @@ func main() {
 	// Initialize components
 	queries := db.NewQueries(pool)
 	linkGen := links.NewGenerator(cfg.UltrafeederURLs)
-	handler := handlers.NewHandler(queries, linkGen)
+	// Left nil when the feature is off, which unregisters the feeder routes
+	// rather than merely hiding them in the UI.
+	var feederHandler *handlers.FeederHandler
+	if cfg.EnableLiveGapFill {
+		feederHandler = handlers.NewFeederHandler(queries, cfg.ProbeTimeout, cfg.AllowPrivateFeeders, cfg.SubmitIPSalt)
+		log.Println("Live gap-fill is ENABLED: /api/feeders accepts submissions from anyone who can reach it.")
+
+		if cfg.AllowPrivateFeeders {
+			log.Println("WARNING: ALLOW_PRIVATE_FEEDERS is on. Submitted feeder URLs may point " +
+				"at private and loopback addresses, which lets anyone who can reach the submit " +
+				"form probe the internal network. Only run this on a closed network.")
+		}
+	} else {
+		log.Println("Live gap-fill is off. Set ENABLE_LIVE_GAPFILL=true to turn it on.")
+	}
+
+	handler := handlers.NewHandler(queries, linkGen, feederHandler)
 
 	// Set up routes
 	mux := http.NewServeMux()
@@ -75,7 +91,7 @@ func main() {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == http.MethodOptions {
