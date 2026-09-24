@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Custom HTML hooks.** Mount a folder at `/etc/sky-history/custom` in the
+  frontend container and nginx inserts its `head.html` at the end of `<head>`
+  and `body-end.html` at the end of `<body>` on every page -- for analytics
+  such as a self-hosted Plausible, verification tags and the like -- without
+  rebuilding the image. Missing files insert nothing, so existing deployments
+  are unchanged.
+
 ## [1.7.0] - 2026-09-20
 
 A public, read-only API for search and stats.

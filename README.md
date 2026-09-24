@@ -240,6 +240,9 @@ services:
       - api
     ports:
       - "${FRONTEND_PORT:-8080}:80"
+    # Optional: installation-specific HTML (analytics etc.). See Custom HTML.
+    # volumes:
+    #   - ./custom:/etc/sky-history/custom:ro
     networks:
       - skyhistory
 
@@ -316,6 +319,40 @@ tables.
 All of this is presentation except **Live gap-fill**, which widens what a
 search asks the API for — see [Live gap-fill](#live-gap-fill). Times are stored
 and queried in UTC regardless of what is selected here.
+
+---
+
+## Custom HTML
+
+An installation can add its own HTML to every page -- an analytics snippet, a
+site-verification `<meta>` tag, a chat widget -- without rebuilding the
+frontend image. Mount a folder at `/etc/sky-history/custom` in the frontend
+container and put either or both of these files in it:
+
+| File            | Inserted                         | Typical use                                  |
+|-----------------|----------------------------------|----------------------------------------------|
+| `head.html`     | at the end of `<head>`           | Analytics, verification meta tags, extra CSS |
+| `body-end.html` | at the end of `<body>`           | Widgets and scripts that should load last    |
+
+For example, to use a self-hosted [Plausible](https://plausible.io) instance,
+create `custom/head.html` next to your `docker-compose.yml`:
+
+```html
+<script defer data-domain="skyhistory.example.com" src="https://plausible.example.com/js/script.js"></script>
+```
+
+and uncomment the `volumes:` lines under `frontend` in the
+[example compose file](#example-docker-composeyml). Plausible follows the
+app's in-page navigation on its own; nothing else is needed.
+
+nginx inserts the files with server-side includes when it serves
+`index.html`, so the contents are used as-is. Edits show up on the next page
+load, with no restart needed. A missing file inserts nothing, so a deployment without the
+folder looks exactly as it did before. The files cannot be fetched directly.
+
+Whatever you put in these files runs with full access to the page, the same
+as the app's own code. Only put in what you trust, and keep the folder
+writable only by whoever administers the server.
 
 ---
 

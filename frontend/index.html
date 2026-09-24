@@ -43,9 +43,19 @@
         }
       })();
     </script>
+    <!--
+      Installation hook: nginx replaces the include below with the contents of
+      head.html from the mounted custom folder (analytics, verification meta
+      tags, ...), or with nothing if there is no such file. See the README's
+      "Custom HTML" section. Only nginx acts on it; the Vite dev server leaves
+      it as an inert comment.
+    -->
+    <!--# include virtual="/_custom/head.html" -->
   </head>
   <body>
     <div id="app"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <!-- Installation hook, as above: body-end.html from the custom folder. -->
+    <!--# include virtual="/_custom/body-end.html" -->
   </body>
 </html>
