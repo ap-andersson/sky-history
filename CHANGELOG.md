@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-09-24
+
+Custom HTML hooks for installation-specific snippets.
+
 ### Added
 
 - **Custom HTML hooks.** Mount a folder at `/etc/sky-history/custom` in the
@@ -440,7 +444,8 @@ Initial state of the project prior to versioned releases: processor, API,
 frontend and PostgreSQL schema, deployed via Docker Compose with images built
 from `main`. Never formally tagged; recorded here for continuity.
 
-[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/ap-andersson/sky-history/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.8.0
 [1.7.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.7.0
 [1.6.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.6.0
 [1.5.0]: https://github.com/ap-andersson/sky-history/releases/tag/v1.5.0
